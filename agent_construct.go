@@ -71,6 +71,11 @@ type AgentOptions struct {
 	// SearchNamespace isolates brain retrieval when set (session-owned, checkpointed).
 	// Nil leaves a loaded session value unchanged. Workers get a copy at spawn.
 	SearchNamespace *uuid.UUID
+	// DownloadInterception enables heuristic download detection on tool arguments.
+	// When Enabled, tool calls with download-like patterns in their arguments raise a
+	// tool_permission interrupt so the user can approve or reject them. Nil disables.
+	// Only applies to the built-in interceptor chain; custom ToolInterceptors skip it.
+	DownloadInterception *DownloadGateConfig
 }
 
 // streamEventBuffer is the harness event channel size so EmitUpdate is not dropped
@@ -133,6 +138,8 @@ func newHarnessBase(opts AgentOptions, sm *session.SessionManager) *AgentHarness
 	}
 	if opts.ToolInterceptors != nil {
 		h.toolRunner = newToolRunner(opts.ToolInterceptors...)
+	} else if opts.DownloadInterception != nil && opts.DownloadInterception.Enabled {
+		h.toolRunner = newToolRunner(h.planningWriteLock, downloadGate(opts.DownloadInterception), toolPermissionGate)
 	} else {
 		h.toolRunner = newToolRunner(h.planningWriteLock, toolPermissionGate)
 	}
