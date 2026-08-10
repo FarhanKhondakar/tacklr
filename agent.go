@@ -697,6 +697,12 @@ func (a *AgentHarness) initMCP(ctx context.Context) {
 				return handler(ctx, args)
 			},
 		})
+		for _, cfg := range a.mcpConfigs {
+			if cfg.Name == namespace && cfg.ApprovalReason != "" {
+				tool.ApprovalReason = cfg.ApprovalReason
+				break
+			}
+		}
 		a.tools = append(a.tools, tool)
 	})
 }

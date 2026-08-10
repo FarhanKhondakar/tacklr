@@ -52,6 +52,11 @@ type Tool struct {
 	Timeout time.Duration
 	// PermissionRequired asks the user to approve the tool before it runs.
 	PermissionRequired bool
+	// ApprovalReason is a stable action name (e.g. "download", "shell", "file_write").
+	// When non-empty, the tool requires approval and the reason is carried through to
+	// the client interrupt for contextual warning rendering. Distinct from
+	// PermissionRequired which is a boolean gate without a reason.
+	ApprovalReason string
 
 	handlerFunc func(ctx context.Context, args map[string]any, runtime HarnessRuntime) (toolCallResult, error)
 	parameters  map[string]any
@@ -68,6 +73,10 @@ type ToolConfig struct {
 	Timeout     time.Duration
 	// PermissionRequired asks the user to approve the tool before it runs.
 	PermissionRequired bool
+	// ApprovalReason assigns a stable action name for approval gating (e.g. "download",
+	// "shell"). Non-empty triggers toolPermissionGate and the reason is passed to the
+	// client interrupt so the UI can render contextual warnings.
+	ApprovalReason string
 
 	Handler any
 }
@@ -160,6 +169,7 @@ func NewTool(cfg ToolConfig) *Tool {
 		Access:             cfg.Access,
 		Timeout:            cfg.Timeout,
 		PermissionRequired: cfg.PermissionRequired,
+		ApprovalReason:     cfg.ApprovalReason,
 		strict:             true,
 	}
 	if argsType != nil {

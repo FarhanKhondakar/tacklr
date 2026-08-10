@@ -58,4 +58,8 @@ type MCPConfig struct {
 	// Headers are HTTP headers included in requests to the server (http and
 	// sse transports). Authorization and other credentials are carried here.
 	Headers []HTTPHeader `json:"headers,omitempty"`
+	// ApprovalReason assigns a stable action name (e.g. "download", "shell") to all
+	// tools discovered from this MCP server. Non-empty marks each tool for approval
+	// gating and the reason is carried through to the client interrupt.
+	ApprovalReason string `json:"approvalReason,omitempty"`
 }

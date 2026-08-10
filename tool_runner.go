@@ -62,10 +62,10 @@ func (r *toolRunner) Run(ctx context.Context, inv ToolInvocation) (string, ToolR
 	return out, toolDisp, err
 }
 
-// toolPermissionGate raises tool_permission when PermissionRequired is set.
-// allow_always and reject_always are stored for the session.
+// toolPermissionGate raises tool_permission when PermissionRequired is set or
+// ApprovalReason is non-empty. allow_always and reject_always are stored for the session.
 func toolPermissionGate(ctx context.Context, inv ToolInvocation, next ToolCallFunc) (string, error) {
-	if inv.Tool == nil || !inv.Tool.PermissionRequired {
+	if inv.Tool == nil || (!inv.Tool.PermissionRequired && inv.Tool.ApprovalReason == "") {
 		return next(ctx, inv)
 	}
 
@@ -81,6 +81,7 @@ func toolPermissionGate(ctx context.Context, inv ToolInvocation, next ToolCallFu
 	initPayload, _ := json.Marshal(map[string]any{
 		"toolName": name,
 		"title":    title,
+		"reason":   inv.Tool.ApprovalReason,
 	})
 	intr, err := inv.Runtime.RaiseInterrupt("tool_permission", initPayload)
 	if err != nil {

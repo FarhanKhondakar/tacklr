@@ -127,7 +127,8 @@ type ToolPermissionPayload struct {
 // ToolPermissionInterrupt asks the user to approve or reject a tool call.
 type ToolPermissionInterrupt struct {
 	ToolName string             `json:"toolName,omitempty"`
-	Title    string             `json:"title,omitempty"` // human-readable invocation label
+	Title    string             `json:"title,omitempty"`  // human-readable invocation label
+	Reason   string             `json:"reason,omitempty"` // stable action name (e.g. "download", "shell")
 	Options  []PermissionOption `json:"options"`
 
 	// Set by Return after the consumer selects an option.
@@ -150,6 +151,7 @@ func (p *ToolPermissionInterrupt) InitFromPayload(payload []byte) error {
 	var init struct {
 		ToolName string             `json:"toolName"`
 		Title    string             `json:"title"`
+		Reason   string             `json:"reason"`
 		Options  []PermissionOption `json:"options"`
 	}
 	if err := json.Unmarshal(payload, &init); err != nil {
@@ -157,6 +159,7 @@ func (p *ToolPermissionInterrupt) InitFromPayload(payload []byte) error {
 	}
 	p.ToolName = init.ToolName
 	p.Title = init.Title
+	p.Reason = init.Reason
 	if len(init.Options) == 0 {
 		p.Options = DefaultPermissionOptions()
 	} else {
