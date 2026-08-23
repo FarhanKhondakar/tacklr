@@ -242,6 +242,40 @@ func New(typeName string) (Interrupt, bool) {
 	return f(), true
 }
 
+// Envelope is the durable wire form of an Interrupt: a type discriminator plus
+// its serialized payload. Durable backends (Temporal, Azure, AWS) carry these
+// bytes across processes; the parent harness rehydrates the object via
+// DecodeEnvelope before adopting the interrupt.
+type Envelope struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+// EncodeEnvelope serializes an Interrupt to its durable Envelope form.
+func EncodeEnvelope(intr Interrupt) (Envelope, error) {
+	if intr == nil {
+		return Envelope{}, fmt.Errorf("interrupt: encode nil interrupt")
+	}
+	data, err := intr.Serialize()
+	if err != nil {
+		return Envelope{}, fmt.Errorf("interrupt: serialize %q: %w", intr.TypeName(), err)
+	}
+	return Envelope{Type: intr.TypeName(), Data: data}, nil
+}
+
+// DecodeEnvelope rehydrates an Interrupt from its durable Envelope form.
+// The interrupt type must be registered (see Register).
+func DecodeEnvelope(env Envelope) (Interrupt, error) {
+	intr, ok := New(env.Type)
+	if !ok {
+		return nil, fmt.Errorf("interrupt: unknown interrupt type: %s", env.Type)
+	}
+	if err := json.Unmarshal(env.Data, intr); err != nil {
+		return nil, fmt.Errorf("interrupt: decode %q: %w", env.Type, err)
+	}
+	return intr, nil
+}
+
 // Clone returns a deep copy via JSON for checkpoint snapshots.
 // Returns nil if the type is unknown or serialization fails (best-effort).
 func Clone(intr Interrupt) Interrupt {

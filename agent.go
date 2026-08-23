@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr/brain"
+	"github.com/ryanaldo34/tacklr/durable"
 	mcpruntime "github.com/ryanaldo34/tacklr/internal/mcp"
 	session "github.com/ryanaldo34/tacklr/internal/session"
 	"github.com/ryanaldo34/tacklr/mcp"
@@ -69,8 +70,11 @@ type AgentHarness struct {
 	// vfsBridge is the mount→brain index lifecycle (not the agent turn loop).
 	// Workers receive the parent pointer at construct; ownsVFSBridge is set
 	// only when this harness called vfsindex.Start.
-	vfsBridge        *vfsindex.Bridge
-	ownsVFSBridge    bool
+	vfsBridge     *vfsindex.Bridge
+	ownsVFSBridge bool
+	// durable, when non-nil, runs async spawn_worker jobs via a durable
+	// Executor so they survive process restarts (nil = in-process jobs).
+	durable          durable.Executor
 	fsRegistry       *vfs.BackendRegistry
 	attachmentFS     *vfs.MemoryFactory
 	mcpCleanup       func()

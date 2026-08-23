@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ryanaldo34/tacklr/brain"
+	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/exa"
 	session "github.com/ryanaldo34/tacklr/internal/session"
 	"github.com/ryanaldo34/tacklr/mcp"
@@ -102,6 +103,11 @@ type AgentOptions struct {
 	RunCommandUnattended bool
 	// shareIndexBridge is the parent index bridge. Nil means Start a new bridge.
 	shareIndexBridge *vfsindex.Bridge
+	// Durable, when set, runs background spawn_worker jobs (block=false)
+	// through a durable Executor so they survive process restarts. Nil keeps
+	// today's in-process behavior. Temporal is the first real backend
+	// (durable/temporal); durable/memory is the in-process default.
+	Durable durable.Executor
 }
 
 // Validate checks the complete public construction contract.
@@ -168,6 +174,7 @@ func newHarnessBase(opts AgentOptions, sm *session.SessionManager) (*AgentHarnes
 		runCommandUnattended:  opts.RunCommandUnattended,
 		writeUnattended:       opts.writeUnattended,
 		vfsBridge:             opts.shareIndexBridge,
+		durable:               opts.Durable,
 	}
 	h.jobsCtx, h.jobsCancel = context.WithCancel(context.Background())
 	if opts.MountSession != nil {

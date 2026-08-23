@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/interrupt"
 	"github.com/ryanaldo34/tacklr/streaming"
 )
@@ -45,7 +46,10 @@ type workerRun struct {
 	cancel       context.CancelFunc
 	childIntr    interrupt.Interrupt
 	childIntrIDs []string
-	done         chan struct{} // closed when status leaves running
+	// durable is the backend run handle for executor-backed async jobs.
+	// Nil for in-process jobs.
+	durable durable.RunHandle
+	done    chan struct{} // closed when status leaves running
 }
 
 func (j *workerRun) snapshot() (status, result string, err error) {
@@ -232,6 +236,9 @@ func (a *AgentHarness) removeJob(id string) {
 // scheduleBackgroundWorker starts a worker on the harness jobs context and
 // returns immediately with a schedule message.
 func (a *AgentHarness) scheduleBackgroundWorker(workerName, task, jobID string, runtime HarnessRuntime) (string, error) {
+	if a.durable != nil {
+		return a.scheduleDurableWorker(workerName, task, jobID, runtime)
+	}
 	spec, ok := a.subagents[workerName]
 	if !ok {
 		return "", fmt.Errorf("worker %q: %w", workerName, ErrNotFound)
@@ -376,6 +383,9 @@ func (a *AgentHarness) readJob(ctx context.Context, jobID string, block bool, ru
 	if j == nil {
 		return "", fmt.Errorf("job %q: %w", jobID, ErrNotFound)
 	}
+	if j.durable != nil {
+		return a.readDurableJob(ctx, j, block, runtime)
+	}
 
 	status, _, _ := j.snapshot()
 	if status == jobStatusRunning && !block {
@@ -519,6 +529,13 @@ func (a *AgentHarness) cancelJob(ctx context.Context, jobID string) (string, err
 	if j == nil {
 		return "", fmt.Errorf("job %q: %w", jobID, ErrNotFound)
 	}
+	if j.durable != nil {
+		if err := j.durable.Cancel(ctx); err != nil {
+			return "", fmt.Errorf("job %q: cancel: %w", jobID, err)
+		}
+		a.removeJob(jobID)
+		return fmt.Sprintf("Job %s cancelled and removed.", jobID), nil
+	}
 
 	status, _, _ := j.snapshot()
 	if j.cancel != nil {
@@ -540,7 +557,9 @@ func (a *AgentHarness) cancelJob(ctx context.Context, jobID string) (string, err
 	return fmt.Sprintf("Job %s cancelled and removed.", jobID), nil
 }
 
-// cancelBackgroundJobs cancels detached workers. Called from Close.
+// cancelBackgroundJobs cancels detached in-process workers. Called from Close.
+// Durable jobs are skipped: their lifecycle is owned by the backend (Temporal),
+// which is exactly what lets them outlive this process.
 func (a *AgentHarness) cancelBackgroundJobs() {
 	if a.jobsCancel != nil {
 		a.jobsCancel()
@@ -548,6 +567,9 @@ func (a *AgentHarness) cancelBackgroundJobs() {
 	a.jobsMu.Lock()
 	jobs := make([]*workerRun, 0, len(a.jobs))
 	for _, j := range a.jobs {
+		if j.durable != nil {
+			continue // durable run survives process shutdown by design
+		}
 		jobs = append(jobs, j)
 	}
 	a.jobsMu.Unlock()

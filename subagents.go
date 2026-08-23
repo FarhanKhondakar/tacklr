@@ -328,6 +328,7 @@ func (a *AgentHarness) inheritOptions() AgentOptions {
 		RunCommandUnattended:  a.runCommandUnattended,
 		writeUnattended:       a.writeUnattended,
 		shareIndexBridge:      a.vfsBridge,
+		Durable:               a.durable,
 	}
 }
 
@@ -463,6 +464,8 @@ type workerDrainResult struct {
 	lastAssistant string
 	completed     bool
 	interruptIDs  []string
+	// events records the drained stream when collect is true (durable runs).
+	events []streaming.StreamEvent
 }
 
 // drainWorkerEvents consumes a worker event stream, forwarding progress via
@@ -474,6 +477,18 @@ func drainWorkerEvents(
 	events <-chan StreamEvent,
 	emit func(string),
 ) (workerDrainResult, error) {
+	return drainWorkerEventsCollect(ctx, workerName, events, emit, false)
+}
+
+// drainWorkerEventsCollect is drainWorkerEvents; when collect is true it also
+// records every drained event into the result (for durable-run replay).
+func drainWorkerEventsCollect(
+	ctx context.Context,
+	workerName string,
+	events <-chan StreamEvent,
+	emit func(string),
+	collect bool,
+) (workerDrainResult, error) {
 	var result workerDrainResult
 	for {
 		select {
@@ -482,6 +497,9 @@ func drainWorkerEvents(
 		case ev, ok := <-events:
 			if !ok {
 				return result, nil
+			}
+			if collect {
+				result.events = append(result.events, streaming.StreamEvent(ev))
 			}
 			switch ev.Type {
 			case StreamEventError:
