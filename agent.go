@@ -62,6 +62,7 @@ type AgentHarness struct {
 	brain                *brain.Engine
 	brainWriteKinds      brain.WriteKinds
 	runCommandUnattended bool
+	downloadApproval     bool
 	writeUnattended      bool
 	// vfsBridge is the mount→brain index lifecycle (not the agent turn loop).
 	// Workers receive the parent pointer at construct; ownsVFSBridge is set

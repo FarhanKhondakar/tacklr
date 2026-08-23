@@ -100,6 +100,11 @@ type AgentOptions struct {
 	// RunCommandUnattended injects run_command without ToolPermissionOnCall.
 	// Zero value parks run_command for permission.
 	RunCommandUnattended bool
+	// DownloadApproval parks a download-scoped permission interrupt when
+	// run_command would download an external dependency (curl, git clone,
+	// npm/pip/apt install, ...). Allow/reject-always memory is separate from
+	// plain run_command. Subagents inherit.
+	DownloadApproval bool
 	// shareIndexBridge is the parent index bridge. Nil means Start a new bridge.
 	shareIndexBridge *vfsindex.Bridge
 }
@@ -139,6 +144,7 @@ func NewAgent(ctx context.Context, opts AgentOptions) (*AgentHarness, error) {
 		context:               NewModelContextManager(),
 		contextPolicy:         opts.ContextPolicy,
 		runCommandUnattended:  opts.RunCommandUnattended,
+		downloadApproval:      opts.DownloadApproval,
 		writeUnattended:       opts.writeUnattended,
 		vfsBridge:             opts.shareIndexBridge,
 	}
@@ -259,7 +265,7 @@ func (a *AgentHarness) injectBuiltinTools() {
 	br := a.vfsBridge
 	if ms := a.VFS(); ms != nil {
 		a.tools = append(a.tools, newVFSTools(ms, !a.writeUnattended)...)
-		a.tools = append(a.tools, newRunCommand(ms, !a.runCommandUnattended))
+		a.tools = append(a.tools, newRunCommand(ms, !a.runCommandUnattended, a.downloadApproval))
 	}
 	if a.brain != nil {
 		var idx *vfsindex.MountIndexer
