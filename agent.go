@@ -15,6 +15,7 @@ import (
 	"github.com/ryanaldo34/tacklr/durable"
 	mcpruntime "github.com/ryanaldo34/tacklr/internal/mcp"
 	session "github.com/ryanaldo34/tacklr/internal/session"
+	"github.com/ryanaldo34/tacklr/interrupt"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/skills"
 	"github.com/ryanaldo34/tacklr/stores"
@@ -99,6 +100,13 @@ func (a *AgentHarness) VFS() *vfs.MountSession {
 // SessionID returns the durable session id, or empty if unbound.
 // Set with AgentOptions.SessionID at construction.
 func (a *AgentHarness) SessionID() string { return a.sessionId }
+
+// PendingInterrupts returns the open pending interrupt ids plus the primary
+// (first) interrupt for durable park state (session turns). Returns nil when
+// the harness is not parked.
+func (a *AgentHarness) PendingInterrupts() ([]string, interrupt.Interrupt) {
+	return a.session.PendingInterrupts()
+}
 
 // Messages returns a snapshot of the conversation window.
 // Observation only; do not use this to rehydrate or rewrite the window.

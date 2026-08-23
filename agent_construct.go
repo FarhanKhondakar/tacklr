@@ -428,5 +428,8 @@ func NewAgentFromSession(ctx context.Context, sessionId string, opts AgentOption
 	if err := h.finishInit(ctx, opts.SubAgents); err != nil {
 		return nil, err
 	}
+	// Surviving durable runs (background jobs) are re-attached so get_job and
+	// list_jobs keep working across a process restart.
+	h.reattachDurableJobs(ctx)
 	return h, nil
 }

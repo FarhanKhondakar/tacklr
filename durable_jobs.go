@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -136,6 +137,101 @@ func durableInterruptState(worker *AgentHarness, interruptIDs []string) (*durabl
 
 // --- executor-backed job path ---
 
+// reattachDurableJobs restores surviving durable runs onto a freshly loaded
+// harness: the checkpointed open-job list is re-attached by idempotent Start,
+// and watch goroutines mirror backend state so get_job/list_jobs work after a
+// process restart. Returns the number re-attached.
+func (a *AgentHarness) reattachDurableJobs(ctx context.Context) int {
+	if a.durable == nil || a.session == nil {
+		return 0
+	}
+	meta := a.session.DurableJobs()
+	reattached := 0
+	for _, m := range meta {
+		if existing := a.getJob(m.ID); existing != nil {
+			continue
+		}
+		handle, err := a.durable.Start(ctx, durable.RunSpec{
+			ID:         m.ID,
+			Kind:       durable.RunKindWorkerJob,
+			SessionID:  a.sessionId,
+			WorkerName: m.WorkerName,
+			Task:       m.Task,
+		})
+		if err != nil {
+			slog.Error("re-attach durable job", "job_id", m.ID, "error", err)
+			continue
+		}
+		j := &workerRun{
+			id:         m.ID,
+			workerName: m.WorkerName,
+			task:       m.Task,
+			mode:       workerDeliveryMode(m.Mode),
+			status:     jobStatusRunning,
+			durable:    handle,
+			done:       make(chan struct{}),
+		}
+		if j.mode == "" {
+			j.mode = workerDeliveryAsync
+		}
+		a.registerJob(j)
+		go a.watchDurableJob(j)
+		reattached++
+	}
+	if reattached > 0 {
+		slog.Info("re-attached durable jobs after restart", "count", reattached, "session_id", a.sessionId)
+	}
+	return reattached
+}
+
+// runWorkerDurable drives a synchronous spawn_worker (block=true) through the
+// durable Executor. The run id is the spawn tool-call id, so a parent-turn
+// retry after a crash attaches to the surviving run instead of re-running it.
+// Interrupt handling mirrors get_job: the run parks, the placeholder is
+// adopted onto the spawn tool call (parking the parent), and on re-entry the
+// resolution payload is forwarded to the child via SignalResume.
+func (a *AgentHarness) runWorkerDurable(ctx context.Context, workerName, task, toolCallID string, runtime HarnessRuntime) (string, error) {
+	if _, ok := a.subagents[workerName]; !ok {
+		return "", fmt.Errorf("worker %q: %w", workerName, ErrNotFound)
+	}
+	if strings.TrimSpace(task) == "" && a.getParkMeta(toolCallID) == nil {
+		return "", fmt.Errorf("worker %q: empty task: %w", workerName, ErrInvalid)
+	}
+
+	// A re-entered spawn (after the parent parked on this tool call) reuses
+	// the registered run; a fresh spawn starts one.
+	j := a.getJob(toolCallID)
+	if j == nil {
+		handle, err := a.durable.Start(ctx, durable.RunSpec{
+			ID:         toolCallID,
+			Kind:       durable.RunKindWorkerJob,
+			SessionID:  a.sessionId,
+			WorkerName: workerName,
+			Task:       task,
+		})
+		if err != nil {
+			return "", fmt.Errorf("worker %q: start durable run: %w", workerName, err)
+		}
+		j = &workerRun{
+			id:         toolCallID,
+			workerName: workerName,
+			task:       task,
+			mode:       workerDeliverySync,
+			status:     jobStatusRunning,
+			durable:    handle,
+			done:       make(chan struct{}),
+		}
+		a.registerJob(j)
+		go a.watchDurableJob(j)
+	}
+
+	if j.workerName != "" && j.workerName != workerName {
+		return "", fmt.Errorf("job %q: worker mismatch: %w", toolCallID, ErrInvalid)
+	}
+	runtime.EmitUpdate(fmt.Sprintf("Worker %q started (durable)", workerName))
+	return a.readDurableJob(ctx, j, true, runtime)
+}
+
 // scheduleDurableWorker starts an async worker job on the durable Executor.
 func (a *AgentHarness) scheduleDurableWorker(workerName, task, jobID string, runtime HarnessRuntime) (string, error) {
 	if _, ok := a.subagents[workerName]; !ok {
@@ -190,6 +286,11 @@ func (a *AgentHarness) watchDurableJob(j *workerRun) {
 				j.mu.Lock()
 				if j.status == jobStatusRunning {
 					j.status = jobStatusInterrupted
+					select {
+					case <-j.done:
+					default:
+						close(j.done)
+					}
 				}
 				j.mu.Unlock()
 			case durable.StatusCompleted, durable.StatusFailed:
@@ -242,27 +343,39 @@ func (a *AgentHarness) jobsCtxOrBackground() context.Context {
 // readDurableJob implements get_job for a durable run. block waits for the
 // run to reach a terminal state; an interrupted run is resumed via Signal.
 func (a *AgentHarness) readDurableJob(ctx context.Context, j *workerRun, block bool, runtime HarnessRuntime) (string, error) {
-	st, err := j.durable.Status(ctx)
-	if err != nil {
-		return "", err
-	}
 	if !block {
 		return a.formatJob(j.id)
 	}
 
-	switch st {
-	case durable.StatusInterrupted:
-		return a.resumeDurableJob(ctx, j, runtime)
-	case durable.StatusRunning:
+	for {
+		st, err := j.durable.Status(ctx)
+		if err != nil {
+			return "", err
+		}
+		switch st {
+		case durable.StatusInterrupted:
+			return a.resumeDurableJob(ctx, j, runtime)
+		case durable.StatusCompleted, durable.StatusFailed:
+			return a.finishDurableJobResult(ctx, j)
+		}
+		// Running: wait for the watcher to observe a state change (park or
+		// terminal), then re-evaluate. Waiting on j.done instead of Result()
+		// directly means a run that parks does not block the tool call forever.
 		runtime.EmitUpdate(fmt.Sprintf("Awaiting job %s", j.id))
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-j.done:
+		}
 	}
+}
+
+// finishDurableJobResult resolves a terminal durable run into its result.
+func (a *AgentHarness) finishDurableJobResult(ctx context.Context, j *workerRun) (string, error) {
 	res, err := j.durable.Result(ctx)
 	if err != nil {
 		a.removeJob(j.id)
 		return "", err
-	}
-	if res.Status == durable.StatusInterrupted {
-		return a.resumeDurableJob(ctx, j, runtime)
 	}
 	a.removeJob(j.id)
 	if res.Status != durable.StatusCompleted {

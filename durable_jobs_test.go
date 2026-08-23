@@ -154,6 +154,240 @@ func mustRunner(t *testing.T, factory DurableStepRunnerFactory) durable.StepRunn
 	return r
 }
 
+// TestDurableJobs_reattachAfterRestart proves the checkpoint re-attach path:// an open durable job is persisted in the session checkpoint; after a
+// simulated process restart (drop the live harness, rebuild from the store), a
+// fresh harness re-attaches to the surviving run and get_job collects its
+// result. The run itself survives because the executor owns it.
+func TestDurableJobs_reattachAfterRestart(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	workerModel := &mockStrategy{
+		invokeFn: func(ctx context.Context, _ []*Message, _ []*Tool, ch chan<- LLMResponseChunk) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return
+			}
+			ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "result after restart", IsComplete: true}
+		},
+	}
+	store := stores.NewInMemoryStore()
+	factory := func(name, id string) (AgentOptions, error) {
+		return AgentOptions{Config: Config{MaxWindowSize: 8192}, Model: workerModel, Store: store}, nil
+	}
+	executor := memory.Must(mustRunner(t, factory))
+
+	step := 0
+	parent := &mockStrategy{}
+	parent.invokeFn = func(ctx context.Context, msgs []*Message, tools []*Tool, ch chan<- LLMResponseChunk) {
+		step++
+		if step == 1 {
+			ch <- LLMResponseChunk{Type: StreamEventFunctionCall, ToolCalls: []ToolCall{
+				toolCall("bg1", "spawn_worker", `{"worker_name":"researcher","task_description_and_context":"dig","block":false}`),
+			}, IsComplete: true}
+			return
+		}
+		ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "parent done", IsComplete: true}
+	}
+
+	// First harness schedules the job and is torn down (simulated crash). The
+	// job is still running, so the turn cannot finish on its own; cancel once
+	// the worker has started (mirrors the surviveClose pattern).
+	parentOpts := AgentOptions{
+		Config:    Config{MaxWindowSize: 8192},
+		Model:     parent,
+		Store:     store,
+		Durable:   executor,
+		SessionID: "parent-session",
+		SubAgents: []*SubAgent{{WorkerName: "researcher", Model: workerModel}},
+	}
+	h1 := mustNewAgent(t, parentOpts)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	events1, err := h1.Run(ctx1, "schedule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained1 := make(chan struct{})
+	go func() {
+		_ = drainEvents(events1)
+		close(drained1)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("durable worker never started")
+	}
+	cancel1()
+	<-drained1
+	h1.Close()
+
+	// Second harness (same session, same executor) reloads the checkpoint and
+	// re-attaches to the surviving run.
+	h2 := mustLoadAgent(t, "parent-session", parentOpts)
+	defer h2.Close()
+
+	close(release)
+	if j := h2.getJob("bg1"); j == nil || j.durable == nil {
+		t.Fatal("expected the reloaded harness to re-attach to the durable job")
+	}
+
+	step = 0
+	parent.invokeFn = func(ctx context.Context, msgs []*Message, tools []*Tool, ch chan<- LLMResponseChunk) {
+		step++
+		if step == 1 {
+			ch <- LLMResponseChunk{Type: StreamEventFunctionCall, ToolCalls: []ToolCall{
+				toolCall("g1", "get_job", `{"job_id":"bg1","block":true}`),
+			}, IsComplete: true}
+			return
+		}
+		ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "done", IsComplete: true}
+	}
+	got := drainEvents(mustRun(t, h2, "collect"))
+	if out := toolResultByName(got, "get_job"); out != "result after restart" {
+		t.Fatalf("get_job after restart = %q", out)
+	}
+}
+
+func mustLoadAgent(t *testing.T, sessionID string, opts AgentOptions) *AgentHarness {
+	t.Helper()
+	h, err := NewAgentFromSession(t.Context(), sessionID, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// TestDurableSyncSpawn_completesThroughExecutor proves a synchronous
+// spawn_worker (block=true) runs through the durable Executor and returns its
+// result inline. The run id is the spawn tool-call id, so re-entry attaches to
+// the same run instead of starting a duplicate.
+func TestDurableSyncSpawn_completesThroughExecutor(t *testing.T) {
+	workerModel := &mockStrategy{
+		invokeFn: func(_ context.Context, _ []*Message, _ []*Tool, ch chan<- LLMResponseChunk) {
+			ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "sync durable output", IsComplete: true}
+		},
+	}
+	store := stores.NewInMemoryStore()
+	factory := func(name, id string) (AgentOptions, error) {
+		return AgentOptions{Config: Config{MaxWindowSize: 8192}, Model: workerModel, Store: store}, nil
+	}
+	executor := memory.Must(mustRunner(t, factory))
+
+	step := 0
+	parent := &mockStrategy{}
+	parent.invokeFn = func(ctx context.Context, msgs []*Message, tools []*Tool, ch chan<- LLMResponseChunk) {
+		step++
+		if step == 1 {
+			ch <- LLMResponseChunk{Type: StreamEventFunctionCall, ToolCalls: []ToolCall{
+				toolCall("s1", "spawn_worker", `{"worker_name":"researcher","task_description_and_context":"dig","block":true}`),
+			}, IsComplete: true}
+			return
+		}
+		ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "parent done", IsComplete: true}
+	}
+
+	h := mustNewAgent(t, AgentOptions{
+		Config:    Config{MaxWindowSize: 8192},
+		Model:     parent,
+		Store:     store,
+		Durable:   executor,
+		SubAgents: []*SubAgent{{WorkerName: "researcher", Model: workerModel}},
+	})
+	defer h.Close()
+
+	got := drainEvents(mustRun(t, h, "sync spawn"))
+	if out := toolResultByName(got, "spawn_worker"); out != "sync durable output" {
+		t.Fatalf("sync spawn_worker = %q", out)
+	}
+	if hasEventType(got, StreamEventError) {
+		t.Fatalf("unexpected error: %+v", summarizeEvents(got))
+	}
+}
+
+// TestDurableSyncSpawn_interruptResume proves a synchronous spawn_worker that
+// parks (block=true) adopts its interrupt onto the spawn tool call, the parent
+// turn parks, and ReturnFromInterrupt resumes the child via the executor.
+func TestDurableSyncSpawn_interruptResume(t *testing.T) {
+	var workerCalls int
+	workerModel := &mockStrategy{}
+	workerModel.invokeFn = func(ctx context.Context, msgs []*Message, tools []*Tool, ch chan<- LLMResponseChunk) {
+		workerCalls++
+		if workerCalls == 1 {
+			ch <- LLMResponseChunk{Type: StreamEventFunctionCall, ToolCalls: []ToolCall{
+				toolCall("ask1", "ask_user_choice", `{"question":"pick one","choices":[{"title":"a"},{"title":"b"}]}`),
+			}, IsComplete: true}
+			return
+		}
+		ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "sync answered", IsComplete: true}
+	}
+
+	store := stores.NewInMemoryStore()
+	factory := func(name, id string) (AgentOptions, error) {
+		return AgentOptions{Config: Config{MaxWindowSize: 8192}, Model: workerModel, Store: store}, nil
+	}
+	executor := memory.Must(mustRunner(t, factory))
+
+	step := 0
+	parent := &mockStrategy{}
+	parent.invokeFn = func(ctx context.Context, msgs []*Message, tools []*Tool, ch chan<- LLMResponseChunk) {
+		step++
+		if step == 1 {
+			ch <- LLMResponseChunk{Type: StreamEventFunctionCall, ToolCalls: []ToolCall{
+				toolCall("s1", "spawn_worker", `{"worker_name":"researcher","task_description_and_context":"ask","block":true}`),
+			}, IsComplete: true}
+			return
+		}
+		ch <- LLMResponseChunk{Type: StreamEventMessage, Content: "parent done", IsComplete: true}
+	}
+
+	h := mustNewAgent(t, AgentOptions{
+		Config:    Config{MaxWindowSize: 8192},
+		Model:     parent,
+		Store:     store,
+		Durable:   executor,
+		SubAgents: []*SubAgent{{WorkerName: "researcher", Model: workerModel}},
+	})
+	defer h.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := h.Run(ctx, "sync spawn that asks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawInterrupt bool
+	for ev := range events {
+		if ev.Type == StreamEventInterrupt {
+			sawInterrupt = true
+		}
+		if ev.Type == StreamEventError {
+			t.Fatalf("turn error: %v", ev.Error)
+		}
+	}
+	if !sawInterrupt {
+		t.Fatal("expected the sync durable spawn to interrupt the parent turn")
+	}
+
+	resumed, err := h.ReturnFromInterrupt(context.Background(), map[string][]byte{
+		"s1": []byte(`{"interruptId":"s1","selectionIdx":1}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := drainEvents(resumed)
+	if out := lastToolResultByName(got, "spawn_worker"); out != "sync answered" {
+		t.Fatalf("resumed spawn_worker = %q, events=%v", out, summarizeEvents(got))
+	}
+	if hasEventType(got, StreamEventError) {
+		t.Fatalf("unexpected error after resume: %+v", summarizeEvents(got))
+	}
+}
+
 // TestDurableBackgroundJobs_interruptResume proves the full durable interrupt
 // cycle: a worker calls ask_user_choice, the run parks on the durable
 // Executor, get_job with block=true resolves it via Signal, and the resumed

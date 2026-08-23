@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/internal/session"
 	"github.com/ryanaldo34/tacklr/interrupt"
 	"github.com/ryanaldo34/tacklr/streaming"
 )
@@ -225,12 +226,40 @@ func (a *AgentHarness) registerJob(j *workerRun) {
 		a.jobs = make(map[string]*workerRun)
 	}
 	a.jobs[j.id] = j
+	if j.durable != nil {
+		a.syncDurableJobsLocked()
+	}
 }
 
 func (a *AgentHarness) removeJob(id string) {
 	a.jobsMu.Lock()
 	defer a.jobsMu.Unlock()
+	_, ok := a.jobs[id]
 	delete(a.jobs, id)
+	if ok {
+		a.syncDurableJobsLocked()
+	}
+}
+
+// syncDurableJobsLocked persists the open durable-job list while jobsMu is
+// held. Callers must hold a.jobsMu.
+func (a *AgentHarness) syncDurableJobsLocked() {
+	if a.session == nil {
+		return
+	}
+	jobs := make([]session.DurableJobMeta, 0, len(a.jobs))
+	for _, j := range a.jobs {
+		if j.durable == nil {
+			continue
+		}
+		jobs = append(jobs, session.DurableJobMeta{
+			ID:         j.id,
+			WorkerName: j.workerName,
+			Task:       j.task,
+			Mode:       string(j.mode),
+		})
+	}
+	a.session.SetDurableJobs(jobs)
 }
 
 // scheduleBackgroundWorker starts a worker on the harness jobs context and

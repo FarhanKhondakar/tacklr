@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/ryanaldo34/tacklr/brain"
@@ -20,16 +21,17 @@ import (
 // namespace + ResultSet live on Search. Builtins close over the manager; user
 // tools use Runtime.
 type SessionManager struct {
-	mu          sync.RWMutex
-	Plan        *PlanStore
-	userState   map[string]any
-	pending     interruptMap
-	resolved    interruptMap
-	Permissions Permissions
-	parks       parkBag
-	OnCall      OnCallStore
-	Search      *brain.SearchContext
-	VFS         *vfs.MountSession
+	mu             sync.RWMutex
+	Plan           *PlanStore
+	userState      map[string]any
+	pending        interruptMap
+	resolved       interruptMap
+	Permissions    Permissions
+	parks          parkBag
+	OnCall         OnCallStore
+	Search         *brain.SearchContext
+	VFS            *vfs.MountSession
+	durableJobList []DurableJobMeta
 }
 
 // NewSessionManager returns an empty manager ready for use.
@@ -61,9 +63,45 @@ func (s *SessionManager) StateDelete(key string) {
 	s.stateDelete(key)
 }
 
+// SetDurableJobs records the session's open durable job list for checkpointing.
+func (s *SessionManager) SetDurableJobs(jobs []DurableJobMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.durableJobList = slices.Clone(jobs)
+}
+
+func (s *SessionManager) durableJobs() []DurableJobMeta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.durableJobList)
+}
+
+// DurableJobs returns the checkpointed open durable job list.
+func (s *SessionManager) DurableJobs() []DurableJobMeta {
+	return s.durableJobs()
+}
+
 // PendingInterrupt returns an open interrupt for id if any.
 func (s *SessionManager) PendingInterrupt(id string) (interrupt.Interrupt, bool) {
 	return s.pendingInterrupt(id)
+}
+
+// PendingInterrupts returns the open pending interrupt ids plus the primary
+// (first) interrupt, mirroring the durable park-state shape used by worker
+// jobs. It returns nil primary when there are no pending interrupts.
+func (s *SessionManager) PendingInterrupts() (ids []string, primary interrupt.Interrupt) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for id, intr := range s.pending {
+		ids = append(ids, id)
+		if primary == nil {
+			primary = intr
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return ids, primary
 }
 
 func (s *SessionManager) stateGet(key string) (any, bool) {

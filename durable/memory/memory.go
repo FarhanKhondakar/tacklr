@@ -90,6 +90,14 @@ func (e *Executor) run(h *handle) {
 			h.fail(errors.New("memory: step returned neither Complete nor Interrupted"))
 			return
 		}
+		// A session turn parks for user input, but its resume is a NEW run
+		// (the registry reconstructs from the checkpoint each RunTurn). End the
+		// run with StatusInterrupted; a resume starts a fresh run whose first
+		// step is StepResume.
+		if h.spec.Kind == durable.RunKindSessionTurn {
+			h.finishInterrupted(outcome.Interrupted)
+			return
+		}
 		h.setInterrupted(outcome.Interrupted)
 
 		select {
@@ -269,6 +277,26 @@ func (h *handle) complete(output string) {
 	h.mu.Lock()
 	h.status = durable.StatusCompleted
 	h.result = durable.RunResult{Status: durable.StatusCompleted, Output: output}
+	h.mu.Unlock()
+}
+
+// finishInterrupted ends a session-turn run parked for input. The run is
+// terminal (resume is a new run), so Status and Result resolve to
+// StatusInterrupted and event subscribers are closed.
+func (h *handle) finishInterrupted(state *durable.InterruptState) {
+	h.mu.Lock()
+	h.status = durable.StatusInterrupted
+	h.parked = state
+	h.result = durable.RunResult{Status: durable.StatusInterrupted}
+	select {
+	case <-h.done:
+	default:
+		close(h.done)
+	}
+	for _, sub := range h.subs {
+		close(sub)
+	}
+	h.subs = nil
 	h.mu.Unlock()
 }
 

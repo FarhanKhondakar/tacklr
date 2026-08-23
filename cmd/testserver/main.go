@@ -18,7 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ryanaldo34/tacklr"
+	tacklrdurable "github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/durable/temporal"
 	"github.com/ryanaldo34/tacklr/inference"
 	"github.com/ryanaldo34/tacklr/server"
 	"github.com/ryanaldo34/tacklr/stores"
@@ -66,7 +70,21 @@ func main() {
 		)
 	}
 
-	store := stores.NewInMemoryStore()
+	var store stores.BaseStore = stores.NewInMemoryStore()
+	if url := strings.TrimSpace(os.Getenv("TACKLR_POSTGRES_URL")); url != "" {
+		pgCtx, pgCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		conn, err := pgx.Connect(pgCtx, url)
+		pgCancel()
+		if err != nil {
+			slog.Error("postgres connect failed", "error", err)
+			os.Exit(1)
+		}
+		defer conn.Close(context.Background())
+		store = stores.NewPostgresStore(conn)
+		slog.Info("session store", "backend", "postgres")
+	} else {
+		slog.Warn("session store is in-memory (restarts lose sessions); set TACKLR_POSTGRES_URL for durable checkpoints")
+	}
 
 	model := inference.NewOpenAIInferenceStrategy(&http.Client{
 		Timeout: 120 * time.Second,
@@ -179,6 +197,81 @@ func main() {
 		FSBootstrap: []vfs.MountSpec{{Point: "/work", Profile: "local"}},
 	})
 
+	// Durable execution (Temporal) is opt-in: set TEMPORAL_ADDRESS to wire the
+	// registry's session turns and spawn_worker jobs onto a Temporal dev server
+	// or Cloud namespace. The turn StepRunner runs in-process via WorkerHost, so
+	// live event streaming stays intact; Postgres (TACKLR_POSTGRES_URL) is
+	// required for checkpoints to survive a process restart.
+	if temporalEnabled() {
+		workerFactory := func(name, id string) (tacklr.AgentOptions, error) {
+			opts := tacklr.AgentOptions{
+				Config:    tacklr.Config{MaxWindowSize: maxWindow},
+				Model:     model,
+				Store:     store,
+				ExaAPIKey: exaKey,
+			}
+			switch name {
+			case "researcher":
+			default:
+				return tacklr.AgentOptions{}, fmt.Errorf("unknown worker %q", name)
+			}
+			return opts, nil
+		}
+		workerRunner, err := tacklr.DurableStepRunner(workerFactory)
+		if err != nil {
+			slog.Error("durable worker runner", "error", err)
+			os.Exit(1)
+		}
+		turnRunner, err := reg.SessionTurnStepRunner()
+		if err != nil {
+			slog.Error("durable turn runner", "error", err)
+			os.Exit(1)
+		}
+		runner := func(ctx context.Context, in tacklrdurable.StepInput) (tacklrdurable.StepOutcome, error) {
+			if in.Spec.Kind == tacklrdurable.RunKindSessionTurn {
+				return turnRunner(ctx, in)
+			}
+			return workerRunner(ctx, in)
+		}
+		cfg := temporal.ConfigFromEnv()
+		host, err := temporal.NewWorkerHost(context.Background(), cfg, runner)
+		if err != nil {
+			slog.Error("temporal worker host", "error", err)
+			os.Exit(1)
+		}
+		if err := host.StartBackground(); err != nil {
+			slog.Error("temporal worker start", "error", err)
+			os.Exit(1)
+		}
+		defer host.Close()
+		reg = server.NewRegistry(store, defaultAgent, append(vfsOpts, server.WithDurable(host.Executor()))...)
+		reg.Register(defaultAgent, server.AgentSpec{
+			Name: "Tacklr",
+			Options: tacklr.AgentOptions{
+				Config: tacklr.Config{
+					MaxWindowSize: maxWindow,
+					SystemPrompt:  "",
+				},
+				Model:     model,
+				ExaAPIKey: exaKey,
+				SubAgents: []*tacklr.SubAgent{{
+					WorkerName: "researcher",
+					Model:      model,
+					Instructions: "You are a research worker. Investigate the task you are given, " +
+						"gather relevant facts, and report a concise summary as your final message.",
+				}},
+				Durable: host.Executor(),
+			},
+			FSRegistry:  fsReg,
+			FSBootstrap: []vfs.MountSpec{{Point: "/work", Profile: "local"}},
+		})
+		slog.Info("durable execution enabled",
+			"temporal_address", temporal.ConfigFromEnv().Address,
+			"task_queue", temporal.ConfigFromEnv().TaskQueueName(),
+			"worker", "researcher",
+		)
+	}
+
 	slog.Info("harness showcase",
 		"max_window_size", maxWindow,
 		"skill_dirs", len(skillHostDirs),
@@ -240,6 +333,21 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// temporalEnabled reports whether durable execution is requested. Any
+// TEMPORAL_* variable opts in; the bare default address without env keeps the
+// in-process path (deterministic local demos).
+func temporalEnabled() bool {
+	for _, key := range []string{
+		"TEMPORAL_ADDRESS", "TEMPORAL_NAMESPACE", "TEMPORAL_TASK_QUEUE",
+		"TEMPORAL_API_KEY", "TEMPORAL_TLS_CERT", "TEMPORAL_TLS_KEY",
+	} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func disabledOTEL() bool {

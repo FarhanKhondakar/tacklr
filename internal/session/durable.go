@@ -17,6 +17,7 @@ const (
 	moduleParks       = "parks"
 	moduleOnCall      = "onCall"
 	moduleSearch      = "search"
+	moduleDurableJobs = "durableJobs"
 )
 
 type planCheckpoint struct {
@@ -36,6 +37,20 @@ type parksCheckpoint struct {
 
 type onCallCheckpoint struct {
 	Stages []onCallStage `json:"stages,omitempty"`
+}
+
+// DurableJobMeta is the checkpointed record of an open durable job owned by a
+// harness session. The harness re-attaches to the backend run on reload so
+// get_job/list_jobs survive a process restart.
+type DurableJobMeta struct {
+	ID         string `json:"id"`
+	WorkerName string `json:"workerName"`
+	Task       string `json:"task"`
+	Mode       string `json:"mode,omitempty"`
+}
+
+type durableJobsCheckpoint struct {
+	Jobs []DurableJobMeta `json:"jobs,omitempty"`
 }
 
 func (s *SessionManager) snapshotCheckpoint() (
@@ -98,6 +113,9 @@ func (s *SessionManager) snapshotCheckpoint() (
 			return nil, nil, nil, nil, fmt.Errorf("checkpoint search: %w", err)
 		}
 	}
+	if modules[moduleDurableJobs], err = json.Marshal(durableJobsCheckpoint{Jobs: s.durableJobs()}); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("checkpoint durable jobs: %w", err)
+	}
 	return userState, modules, pending, resolved, nil
 }
 
@@ -124,6 +142,10 @@ func (s *SessionManager) applyCheckpoint(userState, modules map[string]json.RawM
 		if err := search.Restore(raw); err != nil {
 			return fmt.Errorf("checkpoint module %q: %w", moduleSearch, err)
 		}
+	}
+	var durableJobs durableJobsCheckpoint
+	if err := decodeModule(modules, moduleDurableJobs, &durableJobs); err != nil {
+		return err
 	}
 
 	decodedUser := make(map[string]any, len(userState))
@@ -161,6 +183,7 @@ func (s *SessionManager) applyCheckpoint(userState, modules map[string]json.RawM
 	s.mu.Lock()
 	s.userState = decodedUser
 	s.Search = search
+	s.durableJobList = slices.Clone(durableJobs.Jobs)
 	s.mu.Unlock()
 	return nil
 }

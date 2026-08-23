@@ -42,7 +42,7 @@ func startDevServer(t *testing.T, runner durable.StepRunner) (*testsuite.DevServ
 		t.Fatalf("start worker: %v", err)
 	}
 	t.Cleanup(host.Close)
-	return srv, host, NewExecutorWithClient(client, queue)
+	return srv, host, host.Executor()
 }
 
 // TestTacklrRunWorkflow_completesThroughActivity is the flagship Temporal
@@ -148,6 +148,126 @@ func TestTacklrRunWorkflow_interruptSignalResume(t *testing.T) {
 	}
 	if calls < 2 {
 		t.Fatalf("expected start + resume steps, got %d", calls)
+	}
+}
+
+// TestTacklrRunWorkflow_sessionTurnEndsOnInterrupt proves a session-turn run
+// parks by ENDING with StatusInterrupted (resume is a new turn-scoped
+// workflow), unlike a worker job which waits for a signal.
+func TestTacklrRunWorkflow_sessionTurnEndsOnInterrupt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping temporal integration in -short mode")
+	}
+	runner := func(ctx context.Context, in durable.StepInput) (durable.StepOutcome, error) {
+		return durable.StepOutcome{
+			Interrupted: &durable.InterruptState{ChildInterruptIDs: []string{"c1"}},
+		}, nil
+	}
+	_, _, exec := startDevServer(t, runner)
+
+	ctx := context.Background()
+	h, err := exec.Start(ctx, durable.RunSpec{
+		ID:        "wf-turn-1",
+		Kind:      durable.RunKindSessionTurn,
+		SessionID: "sess-turn",
+		AgentID:   "default",
+		Task:      "ask",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.Result(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != durable.StatusInterrupted {
+		t.Fatalf("session turn should end interrupted, got %+v", res)
+	}
+	// The run is terminal: resume is a new workflow, so Signaling the ended
+	// run must error (no open workflow to receive it).
+	if err := h.Signal(ctx, durable.Signal{Name: durable.SignalResume}); err == nil {
+		t.Fatal("expected signal on an ended session-turn workflow to fail")
+	}
+}
+
+// TestTacklrRunWorkflow_liveBridgeStreamsEvents proves the hybrid live +
+// replay event bridge: with the executor created from the WorkerHost (same
+// process), a step's events stream live through the bridge and are also
+// recoverable via Replay with a consistent sequence cursor.
+func TestTacklrRunWorkflow_liveBridgeStreamsEvents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping temporal integration in -short mode")
+	}
+	release := make(chan struct{})
+	runner := func(ctx context.Context, in durable.StepInput) (durable.StepOutcome, error) {
+		select {
+		case <-ctx.Done():
+			return durable.StepOutcome{}, ctx.Err()
+		case <-release:
+		}
+		events := []streaming.StreamEvent{
+			{Type: streaming.StreamEventMessage, Content: "first"},
+			{Type: streaming.StreamEventMessage, Content: "second"},
+		}
+		// A real harness step forwards every event to the live sink (bridged in
+		// this process) while also recording them for history replay.
+		if sink := durable.EventSinkFromContext(ctx); sink != nil {
+			for _, ev := range events {
+				sink(ev)
+			}
+		}
+		return durable.StepOutcome{
+			Complete: true,
+			Output:   "bridged",
+			Events:   events,
+		}, nil
+	}
+	_, _, exec := startDevServer(t, runner)
+
+	ctx := context.Background()
+	h, err := exec.Start(ctx, durable.RunSpec{
+		ID:         "wf-bridge-1",
+		Kind:       durable.RunKindWorkerJob,
+		SessionID:  "sess-b",
+		WorkerName: "researcher",
+		Task:       "dig",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Subscribe before the step emits so live events are captured.
+	events, err := h.Events(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live []string
+	done := make(chan struct{})
+	go func() {
+		for ev := range events {
+			if ev.Event.Type == streaming.StreamEventMessage {
+				live = append(live, ev.Event.Content)
+			}
+		}
+		close(done)
+	}()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("live event stream never closed")
+	}
+
+	if len(live) != 2 || live[0] != "first" || live[1] != "second" {
+		t.Fatalf("live events = %v", live)
+	}
+	// Replay agrees with the live stream (same events, same seq order).
+	replayed, err := h.Replay(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != 2 || replayed[0].Event.Content != "first" || replayed[1].Event.Content != "second" {
+		t.Fatalf("replay = %+v", replayed)
 	}
 }
 

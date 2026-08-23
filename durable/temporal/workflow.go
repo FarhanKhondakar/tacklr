@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/streaming"
 )
 
 // TacklrRunWorkflow is the deterministic durable driver for one harness run
@@ -71,8 +73,19 @@ func TacklrRunWorkflow(ctx workflow.Context, spec durable.RunSpec) (durable.RunR
 			return durable.RunResult{Status: durable.StatusFailed, Err: errors.New("step returned no outcome")}, nil
 		}
 
-		// Parked: wait for the resume signal, or workflow cancellation. The
-		// selector must also select on ctx.Done so CancelWorkflow wakes it.
+		// A session turn parks for user input the same way a worker job does,
+		// but its resume is a NEW turn-scoped workflow (the registry already
+		// reconstructs from the checkpoint each RunTurn). Ending the workflow
+		// with StatusInterrupted makes session/resume a fresh start that loads
+		// the checkpoint and applies the resolutions as StepResume.
+		if spec.Kind == durable.RunKindSessionTurn {
+			logger.Info("session turn interrupted, resume is a new turn", "run_id", spec.ID)
+			return durable.RunResult{Status: durable.StatusInterrupted}, nil
+		}
+
+		// Parked worker job: wait for the resume signal, or workflow
+		// cancellation. The selector must also select on ctx.Done so
+		// CancelWorkflow wakes it.
 		logger.Info("run interrupted, awaiting resume", "run_id", spec.ID,
 			"child_interrupts", len(outcome.Interrupted.ChildInterruptIDs))
 		var resolutions map[string][]byte
@@ -106,14 +119,31 @@ const ActivityRunStep = "tacklr.RunStep"
 // activity alive while work is genuinely progressing.
 const stepHeartbeatInterval = 5 * time.Second
 
-// RunStepActivity adapts a durable.StepRunner to a Temporal activity. A harness
+// runStepActivity adapts a durable.StepRunner to a Temporal activity. A harness
 // step can run for minutes (a full worker turn), so it runs the runner in the
 // background and heartbeats on a ticker until it returns; on cancellation the
 // heartbeat loop stops and the runner's ctx is already cancelled by Temporal.
-func RunStepActivity(runner durable.StepRunner) func(ctx context.Context, in durable.StepInput) (durable.StepOutcome, error) {
+//
+// When a live event bridge is present (host with an in-process worker), the
+// activity installs an event sink on the runner's context so the harness's
+// drain loop forwards events live; the sequence base is seeded from history so
+// live seqs continue the history cursor across restarts.
+func runStepActivity(runner durable.StepRunner, b *eventBridge, cl client.Client) func(ctx context.Context, in durable.StepInput) (durable.StepOutcome, error) {
 	return func(ctx context.Context, in durable.StepInput) (durable.StepOutcome, error) {
 		if runner == nil {
 			return durable.StepOutcome{}, temporal.NewApplicationError("no StepRunner registered", "ErrInvalid")
+		}
+
+		if b != nil {
+			base, err := eventSeqBase(ctx, cl, in.Spec.ID)
+			if err != nil {
+				base = 0
+			}
+			var i int64 = 1 // first new event continues after the history count
+			ctx = durable.WithEventSink(ctx, func(ev streaming.StreamEvent) {
+				b.emit(in.Spec.ID, durable.BridgedEvent{Seq: base + i, Event: ev})
+				i++
+			})
 		}
 
 		type stepResult struct {

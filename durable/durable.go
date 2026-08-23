@@ -18,8 +18,14 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/streaming"
 )
+
+// eventSinkKey is the context key for the live event sink carried through a
+// step. It survives the Temporal activity boundary because it lives on the
+// context, not in serializable step payloads.
+type eventSinkKey struct{}
 
 // RunKind identifies the shape of a durable run.
 type RunKind int
@@ -81,8 +87,19 @@ type RunSpec struct {
 	SessionID string
 	// WorkerName is the subagent spec name for worker jobs.
 	WorkerName string
+	// AgentID is the registered agent spec name for session turns. It is empty
+	// for worker jobs (which use WorkerName).
+	AgentID string
 	// Task is the user prompt / worker task.
 	Task string
+	// UserMessage is the serialized multimodal user message for session turns
+	// (ACP), when the turn carries structured content instead of a text prompt.
+	// It is nil for worker jobs and text-only turns.
+	UserMessage []byte
+	// MCPServers are session-scoped MCP configs for session turns, carried so
+	// a step that rebuilds the harness has the same MCP world as the original
+	// wire session.
+	MCPServers []mcp.MCPConfig
 	// Load is true when the run resumes an existing checkpointed session.
 	Load bool
 	// Resolutions carries interrupt resolutions (tool-call id -> payload) when
@@ -206,3 +223,20 @@ type InterruptState struct {
 //   - persist the session checkpoint (the harness does this on exit)
 //   - return StepOutcome{Complete|Interrupted|Err}
 type StepRunner func(ctx context.Context, in StepInput) (StepOutcome, error)
+
+// WithEventSink returns a context that carries a live event sink. Durable
+// backends install a sink on the step context so harness drain loops can
+// forward events as they are produced (live streaming); the same events are
+// also recorded in outcome.Events for history replay. The sink is
+// context-carried precisely so it survives the serialization boundary of a
+// Temporal activity without needing to be serializable itself.
+func WithEventSink(ctx context.Context, sink func(streaming.StreamEvent)) context.Context {
+	return context.WithValue(ctx, eventSinkKey{}, sink)
+}
+
+// EventSinkFromContext returns the live event sink installed by WithEventSink,
+// or nil when the context carries none.
+func EventSinkFromContext(ctx context.Context) func(streaming.StreamEvent) {
+	sink, _ := ctx.Value(eventSinkKey{}).(func(streaming.StreamEvent))
+	return sink
+}

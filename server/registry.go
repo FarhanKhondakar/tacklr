@@ -17,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ryanaldo34/tacklr"
+	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/interrupt"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/stores"
 	"github.com/ryanaldo34/tacklr/streaming"
@@ -89,6 +91,11 @@ type TurnRequest struct {
 //	defer func() { stream.Cancel(); stream.Close() }()
 //
 // ResumeInterrupts must run before Close (same turn, same harness).
+//
+// When the registry runs turns through a durable executor, harness is nil and
+// the stream is backed by a durable run handle: SessionID returns the thread
+// id, Cancel cancels the workflow, and ResumeInterrupts starts a fresh
+// turn-scoped workflow carrying the resolutions.
 type EventStream struct {
 	Events  <-chan streaming.StreamEvent
 	harness *tacklr.AgentHarness
@@ -96,17 +103,26 @@ type EventStream struct {
 	cancel  context.CancelFunc
 	closed  bool
 	mu      sync.Mutex
+
+	// durable mode (harness == nil):
+	sessionID string            // thread id for SessionID()
+	handle    durable.RunHandle // live handle for cancel / status
+	resumer   func(ctx context.Context, responses map[string][]byte) (<-chan streaming.StreamEvent, error)
 }
 
 // SessionID is the durable harness thread id, or empty.
 func (s *EventStream) SessionID() string {
-	if s == nil || s.harness == nil {
+	if s == nil {
 		return ""
 	}
-	return s.harness.SessionID()
+	if s.harness != nil {
+		return s.harness.SessionID()
+	}
+	return s.sessionID
 }
 
-// VFS is the session mount table, or nil.
+// VFS is the session mount table, or nil. In durable mode the harness is not
+// live in this process, so nil is returned; VFS tools run inside the workflow.
 func (s *EventStream) VFS() *vfs.MountSession {
 	if s == nil || s.harness == nil {
 		return nil
@@ -126,7 +142,11 @@ func (s *EventStream) Cancelled() bool {
 
 // Cancel cancels the turn context so producers stop. Safe to call multiple times.
 // Does not release the harness; call Close after the event pump finishes.
+// In durable mode it also cancels the backing workflow.
 func (s *EventStream) Cancel() {
+	if s.handle != nil {
+		_ = s.handle.Cancel(context.Background())
+	}
 	s.cancel()
 }
 
@@ -153,8 +173,13 @@ func closeTurnHarness(h *tacklr.AgentHarness) {
 }
 
 // ResumeInterrupts resolves pending interrupts and returns a new event stream
-// from the same harness (ACP mid-turn elicitation resume).
+// from the same harness (ACP mid-turn elicitation resume). In durable mode the
+// harness is not live in this process; a fresh turn-scoped workflow carrying
+// the resolutions is started instead (session/resume semantics).
 func (s *EventStream) ResumeInterrupts(ctx context.Context, responses map[string][]byte) (<-chan streaming.StreamEvent, error) {
+	if s.resumer != nil {
+		return s.resumer(ctx, responses)
+	}
 	if s.harness == nil {
 		return nil, fmt.Errorf("event stream: no harness for resume")
 	}
@@ -170,6 +195,7 @@ type Registry struct {
 	agents       map[string]AgentSpec
 	defaultAgent string
 	store        stores.BaseStore
+	durable      durable.Executor
 	tracer       trace.Tracer           // turn and child spans; default global
 	instruments  *telemetry.Instruments // turn/tool metrics; default global
 	activeTurns  sync.Map               // thread id → *turnHandle
@@ -229,6 +255,17 @@ func WithVFSAuth(a *vfs.SessionAuth) RegistryOption {
 		if a != nil {
 			r.vfsAuth = a
 		}
+	}
+}
+
+// WithDurable sets the durable executor for session turns. When set, RunTurn
+// schedules turn-scoped workflows through the executor instead of running the
+// harness in-process; session/prompt, session/resume, and session/cancel map
+// to start, signal/new-workflow, and cancel on the executor. Nil keeps the
+// in-process path.
+func WithDurable(d durable.Executor) RegistryOption {
+	return func(r *Registry) {
+		r.durable = d
 	}
 }
 
@@ -463,6 +500,10 @@ func (r *Registry) RunTurn(ctx context.Context, req TurnRequest) (*EventStream, 
 		return nil, err
 	}
 
+	if r.durable != nil {
+		return r.runDurableTurn(ctx, agentID, threadID, req, load)
+	}
+
 	h, _, err := r.loadAgent(ctx, agentID, threadID, load, mcpServers, req.AllowMissingCheckpoint)
 	if err != nil {
 		return nil, fmt.Errorf("load agent %q: %w", agentID, err)
@@ -556,6 +597,261 @@ func (r *Registry) RunTurn(ctx context.Context, req TurnRequest) (*EventStream, 
 	}, nil
 }
 
+// runDurableTurn starts a session turn as a durable run: the harness runs
+// inside the workflow's RunStep activity, and the EventStream is backed by the
+// run handle's event stream (hybrid live + replay). Interrupts terminate the
+// workflow with StatusInterrupted; session/resume starts a fresh turn-scoped
+// workflow carrying the resolutions. Cancel cancels the workflow.
+func (r *Registry) runDurableTurn(ctx context.Context, agentID, threadID string, req TurnRequest, load bool) (*EventStream, error) {
+	turnKind := "prompt"
+	if len(req.Responses) > 0 {
+		turnKind = "resume"
+	}
+	turnCtx, cancel := context.WithCancel(ctx)
+	turnCtx = telemetry.ContextWithTracer(turnCtx, r.tracer)
+	turnCtx = telemetry.ContextWithInstruments(turnCtx, r.instruments)
+	turnCtx, turnSpan := telemetry.StartTurnSpan(turnCtx, telemetry.TurnAttrs{
+		AgentID:     agentID,
+		ThreadID:    threadID,
+		SessionID:   req.SessionID,
+		Kind:        turnKind,
+		LoadSession: load,
+	})
+
+	th := &turnHandle{cancel: cancel, done: make(chan struct{})}
+	r.activeTurns.Store(threadID, th)
+
+	runID := threadID + "#" + uuid.New().String()
+	spec := durable.RunSpec{
+		ID:         runID,
+		Kind:       durable.RunKindSessionTurn,
+		SessionID:  threadID,
+		AgentID:    agentID,
+		Task:       req.Prompt,
+		Load:       load,
+		MCPServers: req.MCPServers,
+	}
+	if req.UserMessage != nil {
+		msg, err := json.Marshal(req.UserMessage)
+		if err != nil {
+			r.activeTurns.Delete(threadID)
+			close(th.done)
+			cancel()
+			turnSpan.End(telemetry.OutcomeError, err)
+			return nil, fmt.Errorf("serialize user message: %w", err)
+		}
+		spec.UserMessage = msg
+	}
+	if len(req.Responses) > 0 {
+		resolutions := make(map[string][]byte, len(req.Responses))
+		for id, raw := range req.Responses {
+			resolutions[id] = raw
+		}
+		spec.Resolutions = resolutions
+	}
+
+	handle, err := r.durable.Start(turnCtx, spec)
+	if err != nil {
+		r.activeTurns.Delete(threadID)
+		close(th.done)
+		cancel()
+		turnSpan.End(telemetry.OutcomeError, err)
+		return nil, fmt.Errorf("start durable turn %q: %w", runID, err)
+	}
+
+	// Pump the handle's event stream (bridge + replay) onto the wire channel.
+	out := make(chan streaming.StreamEvent)
+	go func() {
+		defer close(out)
+		defer close(th.done)
+		defer r.activeTurns.Delete(threadID)
+		var streamErr error
+		cancelled := false
+		events, err := handle.Events(turnCtx)
+		if err != nil {
+			if !cancelled {
+				turnSpan.End(telemetry.OutcomeError, err)
+			}
+			return
+		}
+		for {
+			select {
+			case <-turnCtx.Done():
+				cancelled = true
+				turnSpan.End(telemetry.OutcomeCancelled, turnCtx.Err())
+				return
+			case ev, ok := <-events:
+				if !ok {
+					if cancelled {
+						turnSpan.End(telemetry.OutcomeCancelled, turnCtx.Err())
+					} else {
+						turnSpan.End("", streamErr)
+					}
+					return
+				}
+				if ev.Event.Type == streaming.StreamEventError {
+					if ev.Event.Error != nil {
+						streamErr = ev.Event.Error
+					} else if ev.Event.Content != "" {
+						streamErr = fmt.Errorf("%s", ev.Event.Content)
+					}
+				}
+				select {
+				case <-turnCtx.Done():
+					cancelled = true
+					turnSpan.End(telemetry.OutcomeCancelled, turnCtx.Err())
+					return
+				case out <- ev.Event:
+				}
+			}
+		}
+	}()
+
+	stream := &EventStream{
+		Events:    out,
+		runCtx:    turnCtx,
+		cancel:    cancel,
+		sessionID: threadID,
+		handle:    handle,
+		resumer: func(ctx context.Context, responses map[string][]byte) (<-chan streaming.StreamEvent, error) {
+			resumed := TurnRequest{
+				SessionID:  threadID,
+				AgentID:    agentID,
+				MCPServers: req.MCPServers,
+				Load:       true,
+				Responses:  make(map[string]json.RawMessage, len(responses)),
+			}
+			for id, payload := range responses {
+				resumed.Responses[id] = json.RawMessage(payload)
+			}
+			next, err := r.RunTurn(ctx, resumed)
+			if err != nil {
+				return nil, err
+			}
+			return next.Events, nil
+		},
+	}
+	return stream, nil
+}
+
+// SessionTurnStepRunner returns a durable.StepRunner that runs one session
+// turn against the harness: it rebuilds the agent from the checkpoint (or
+// fresh), runs Run/RunMessage/ReturnFromInterrupt, drains events into the
+// outcome (and the live sink), and returns Complete or Interrupted. Hosts wire
+// this into a durable WorkerHost so Registry turns execute durably.
+func (r *Registry) SessionTurnStepRunner() (durable.StepRunner, error) {
+	return func(ctx context.Context, in durable.StepInput) (durable.StepOutcome, error) {
+		spec := in.Spec
+		opts, err := r.buildSessionAgentOptions(ctx, spec.AgentID, spec.SessionID, spec.MCPServers)
+		if err != nil {
+			return durable.StepOutcome{}, err
+		}
+
+		var h *tacklr.AgentHarness
+		if in.Kind == durable.StepResume || spec.Load {
+			if opts.Store == nil {
+				return durable.StepOutcome{}, clientErrorf(ErrSessionStoreNotConfigured, "session store is not configured")
+			}
+			h, err = tacklr.NewAgentFromSession(ctx, spec.SessionID, opts)
+			if err != nil {
+				return durable.StepOutcome{}, fmt.Errorf("resume turn session %q: %w", spec.SessionID, err)
+			}
+		} else {
+			h, err = tacklr.NewAgent(ctx, opts)
+			if err != nil {
+				return durable.StepOutcome{}, fmt.Errorf("build turn agent: %w", err)
+			}
+		}
+		defer h.Close()
+		if err := r.ensureSessionFuse(ctx, h, spec.SessionID); err != nil {
+			return durable.StepOutcome{}, err
+		}
+
+		var events <-chan tacklr.StreamEvent
+		if in.Kind == durable.StepResume {
+			events, err = h.ReturnFromInterrupt(ctx, in.Resolutions)
+		} else if len(spec.UserMessage) > 0 {
+			var msg tacklr.Message
+			if err := json.Unmarshal(spec.UserMessage, &msg); err != nil {
+				return durable.StepOutcome{}, fmt.Errorf("deserialize user message: %w", err)
+			}
+			events, err = h.RunMessage(ctx, &msg)
+		} else {
+			events, err = h.Run(ctx, spec.Task)
+		}
+		if err != nil {
+			return durable.StepOutcome{}, fmt.Errorf("start turn: %w", err)
+		}
+
+		out := durable.StepOutcome{}
+		for {
+			select {
+			case <-ctx.Done():
+				out.Err = ctx.Err().Error()
+				return out, nil
+			case ev, ok := <-events:
+				if !ok {
+					if intr := turnInterruptState(h); intr != nil {
+						out.Interrupted = intr
+					} else {
+						out.Complete = true
+						out.Output = lastAssistantContent(h)
+					}
+					return out, nil
+				}
+				if sink := durable.EventSinkFromContext(ctx); sink != nil {
+					sink(streaming.StreamEvent(ev))
+				}
+				out.Events = append(out.Events, streaming.StreamEvent(ev))
+				if ev.Type == tacklr.StreamEventError {
+					if ev.Error != nil {
+						out.Err = ev.Error.Error()
+					} else if ev.Content != "" {
+						out.Err = ev.Content
+					}
+					return out, nil
+				}
+			}
+		}
+	}, nil
+}
+
+// turnInterruptState returns the durable park state when the turn harness has
+// pending interrupts, else nil.
+func turnInterruptState(h *tacklr.AgentHarness) *durable.InterruptState {
+	ids, primary := h.PendingInterrupts()
+	if primary == nil {
+		return nil
+	}
+	env, err := interruptEnvelope(primary)
+	if err != nil {
+		return nil
+	}
+	return &durable.InterruptState{
+		ChildInterruptIDs: ids,
+		Payload:           env,
+	}
+}
+
+// lastAssistantContent returns the final non-empty assistant/reasoning content
+// from the turn harness window, used as the durable turn output.
+func lastAssistantContent(h *tacklr.AgentHarness) string {
+	for _, msg := range h.Messages() {
+		if (msg.Role == tacklr.RoleAssistant || msg.Role == tacklr.RoleReasoning) && msg.Content != "" {
+			return msg.Content
+		}
+	}
+	return ""
+}
+
+func interruptEnvelope(intr interrupt.Interrupt) ([]byte, error) {
+	env, err := interrupt.EncodeEnvelope(intr)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(env)
+}
+
 // buildConfigOptions returns the ACP config options for a session, with
 // currentAgent as the selected agent value (falls back to defaultAgent).
 func (r *Registry) buildConfigOptions(currentAgent string) []ConfigOption {
@@ -591,10 +887,14 @@ func (r *Registry) buildConfigOptions(currentAgent string) []ConfigOption {
 	}
 }
 
-func (r *Registry) loadAgent(ctx context.Context, agentID, threadID string, load bool, sessionMCP []mcp.MCPConfig, allowMissingCheckpoint bool) (*tacklr.AgentHarness, *AgentSpec, error) {
+// buildSessionAgentOptions constructs the AgentOptions for a session agent,
+// resolving the spec, merging MCP configs, and attaching the session VFS tree.
+// Both the in-process turn path and the durable session-turn StepRunner use
+// it, so a step rebuilds the harness with the same world as the original turn.
+func (r *Registry) buildSessionAgentOptions(ctx context.Context, agentID, threadID string, sessionMCP []mcp.MCPConfig) (tacklr.AgentOptions, error) {
 	spec, ok := r.agents[agentID]
 	if !ok {
-		return nil, nil, clientErrorf(ErrAgentNotFound, "agent %q not found", agentID)
+		return tacklr.AgentOptions{}, clientErrorf(ErrAgentNotFound, "agent %q not found", agentID)
 	}
 
 	store := r.store
@@ -609,7 +909,7 @@ func (r *Registry) loadAgent(ctx context.Context, agentID, threadID string, load
 	wantVFS := spec.FSRegistry != nil && (len(spec.FSBootstrap) > 0 || (r.vfsAuth != nil && r.vfsAuth.HasBindings(threadID)))
 	ms, err := r.sessionVFS(ctx, threadID, &spec)
 	if err != nil {
-		return nil, nil, err
+		return tacklr.AgentOptions{}, err
 	}
 	if wantVFS && ms == nil && !r.vfsProjection().Available() {
 		telemetry.EmitEvent(ctx, telemetry.EventFuseUnavailable,
@@ -622,10 +922,19 @@ func (r *Registry) loadAgent(ctx context.Context, agentID, threadID string, load
 	opts.Store = store
 	opts.MCPConfigs = mcpConfigs
 	opts.MountSession = ms
+	return opts, nil
+}
+
+func (r *Registry) loadAgent(ctx context.Context, agentID, threadID string, load bool, sessionMCP []mcp.MCPConfig, allowMissingCheckpoint bool) (*tacklr.AgentHarness, *AgentSpec, error) {
+	opts, err := r.buildSessionAgentOptions(ctx, agentID, threadID, sessionMCP)
+	if err != nil {
+		return nil, nil, err
+	}
+	spec := r.agents[agentID]
 
 	var h *tacklr.AgentHarness
 	if load {
-		if store == nil {
+		if opts.Store == nil {
 			return nil, nil, clientErrorf(ErrSessionStoreNotConfigured, "session store is not configured")
 		}
 		loaded, err := tacklr.NewAgentFromSession(ctx, threadID, opts)

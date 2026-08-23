@@ -21,6 +21,7 @@ type WorkerHost struct {
 	client client.Client
 	worker worker.Worker
 	queue  string
+	bridge *eventBridge
 }
 
 // NewWorkerHost dials Temporal, builds the worker, and registers the
@@ -42,18 +43,23 @@ func NewWorkerHost(ctx context.Context, cfg Config, runner durable.StepRunner) (
 }
 
 // NewWorkerHostWithClient registers the workflow and activity on a worker
-// over an existing client (shared with the Executor).
+// over an existing client (shared with the Executor). The host owns the
+// live event bridge so Executor handles created from it stream events live.
 func NewWorkerHostWithClient(c client.Client, taskQueue string, runner durable.StepRunner) *WorkerHost {
+	b := newEventBridge()
 	w := worker.New(c, taskQueue, worker.Options{})
 	w.RegisterWorkflow(TacklrRunWorkflow)
-	w.RegisterActivityWithOptions(RunStepActivity(runner), activity.RegisterOptions{Name: ActivityRunStep})
-	return &WorkerHost{client: c, worker: w, queue: taskQueue}
+	w.RegisterActivityWithOptions(runStepActivity(runner, b, c), activity.RegisterOptions{Name: ActivityRunStep})
+	return &WorkerHost{client: c, worker: w, queue: taskQueue, bridge: b}
 }
 
 // Executor returns an Executor over the same client, for hosts that want one
-// process to both schedule and execute durable runs.
+// process to both schedule and execute durable runs. Handles from this
+// executor stream events through the host's live bridge.
 func (h *WorkerHost) Executor() *Executor {
-	return NewExecutorWithClient(h.client, h.queue)
+	e := NewExecutorWithClient(h.client, h.queue)
+	e.bridge = h.bridge
+	return e
 }
 
 // Start begins polling the task queue. It blocks until the worker stops or

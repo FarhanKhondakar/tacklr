@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/session"
 	"github.com/ryanaldo34/tacklr/interrupt"
 	"github.com/ryanaldo34/tacklr/streaming"
@@ -139,14 +140,20 @@ func (a *AgentHarness) runWorker(ctx context.Context, workerName, task string, b
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Drop any residual resolved interrupt for this spawn call — resume is
-	// driven by park metadata + stashed resolution payloads, not RaiseInterrupt.
-	_, _ = a.session.TakeResolvedInterrupt(toolCallID)
-
 	meta := a.getParkMeta(toolCallID)
 	if !block && meta == nil {
 		return a.scheduleBackgroundWorker(workerName, task, toolCallID, runtime)
 	}
+	if a.durable != nil {
+		// The durable resume path resolves the spawn interrupt via
+		// AdoptInterrupt on re-entry, so the resolved interrupt must not be
+		// discarded below (TakeResolvedInterrupt).
+		return a.runWorkerDurable(ctx, workerName, task, toolCallID, runtime)
+	}
+
+	// Drop any residual resolved interrupt for this spawn call — resume is
+	// driven by park metadata + stashed resolution payloads, not RaiseInterrupt.
+	_, _ = a.session.TakeResolvedInterrupt(toolCallID)
 
 	var worker *AgentHarness
 	var closeOnExit bool
@@ -497,6 +504,9 @@ func drainWorkerEventsCollect(
 		case ev, ok := <-events:
 			if !ok {
 				return result, nil
+			}
+			if sink := durable.EventSinkFromContext(ctx); sink != nil {
+				sink(streaming.StreamEvent(ev))
 			}
 			if collect {
 				result.events = append(result.events, streaming.StreamEvent(ev))

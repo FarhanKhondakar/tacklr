@@ -21,6 +21,9 @@ import (
 type Executor struct {
 	client    client.Client
 	taskQueue string
+	// bridge is the in-process live-event bridge, wired when the executor is
+	// created from a WorkerHost in the same process. Nil means replay-only.
+	bridge *eventBridge
 }
 
 // NewExecutor dials the Temporal service and returns an Executor. The caller
@@ -69,17 +72,18 @@ func (e *Executor) Start(ctx context.Context, spec durable.RunSpec) (durable.Run
 		var already *serviceerror.WorkflowExecutionAlreadyStarted
 		if errors.As(err, &already) {
 			// Idempotent attach to the existing run.
-			return &handle{client: e.client, id: spec.ID}, nil
+			return &handle{client: e.client, id: spec.ID, bridge: e.bridge}, nil
 		}
 		return nil, fmt.Errorf("temporal: start workflow %q: %w", spec.ID, err)
 	}
-	return &handle{client: e.client, id: spec.ID}, nil
+	return &handle{client: e.client, id: spec.ID, bridge: e.bridge}, nil
 }
 
 // handle is a durable.RunHandle over the Temporal client.
 type handle struct {
 	client client.Client
 	id     string
+	bridge *eventBridge
 }
 
 func (h *handle) ID() string { return h.id }
@@ -134,25 +138,19 @@ func (h *handle) InterruptState(ctx context.Context) (*durable.InterruptState, e
 	return last, nil
 }
 
-// Events returns the live event stream for the run. Events are recorded in
-// workflow history (as RunStep activity results); this implementation replays
-// history. Live in-process bridging requires the WorkerHost in the same
-// process and is layered on top by the server in a later phase.
+// Events returns the live event stream for the run. When the executor was
+// created from an in-process WorkerHost, events stream live through the
+// bridge with a history-replay prefix (no loss or duplicates at the join).
+// Standalone executors (worker deployed separately) fall back to history
+// replay, so the client sees events only after each step completes.
 func (h *handle) Events(ctx context.Context) (<-chan durable.BridgedEvent, error) {
 	ch := make(chan durable.BridgedEvent, 64)
 	go func() {
-		defer close(ch)
-		events, err := h.Replay(ctx, 0)
-		if err != nil {
+		if h.bridge == nil {
+			replayOnly(ctx, h, ch)
 			return
 		}
-		for _, ev := range events {
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- ev:
-			}
-		}
+		bridgeAndReplay(ctx, h, h.bridge, ch)
 	}()
 	return ch, nil
 }
