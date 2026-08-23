@@ -68,28 +68,16 @@ func main() {
 
 	store := stores.NewInMemoryStore()
 
-	model := inference.NewOpenAIInferenceStrategy(&http.Client{
-		Timeout: 120 * time.Second,
-	})
-	model.WithURL(os.Getenv("OPENAI_BASE_URL")).
-		WithApiKey(os.Getenv("OPENAI_API_KEY")).
-		WithModel(os.Getenv("OPENAI_MODEL")).
-		WithLocalTokenFallback()
+	// OPENAI_API_STYLE selects the wire strategy: "responses" (default, OpenAI
+	// Responses API / Azure Foundry) or "chat" (OpenAI Chat Completions, used by
+	// OpenRouter). Both share the OPENAI_* provider env.
+	apiStyle := strings.ToLower(strings.TrimSpace(os.Getenv("OPENAI_API_STYLE")))
+	if apiStyle == "" {
+		apiStyle = "responses"
+	}
 
-	// Reasoning models (GPT Luna, o-series, …) only stream client-visible thought
-	// when the Responses request asks for a summary. Without this, Foundry may
-	// still emit reasoning items (needed for multi-turn tool pairing) but no
-	// reasoning_summary_text.delta — so Zed never gets agent_thought_chunk.
-	// Defaults: summary=auto. Override with OPENAI_REASONING_SUMMARY; set
-	// OPENAI_REASONING_EFFORT for effort (also implies summary=auto when unset).
-	if effort := strings.TrimSpace(os.Getenv("OPENAI_REASONING_EFFORT")); effort != "" {
-		model.WithReasoningLevel(effort)
-	}
-	if summary := strings.TrimSpace(os.Getenv("OPENAI_REASONING_SUMMARY")); summary != "" {
-		model.WithReasoningSummary(summary)
-	} else if strings.TrimSpace(os.Getenv("OPENAI_REASONING_EFFORT")) == "" {
-		model.WithReasoningSummary("auto")
-	}
+	effort := strings.TrimSpace(os.Getenv("OPENAI_REASONING_EFFORT"))
+
 	// Avoid bare response.incomplete after large tool turns (web_search + plan).
 	// Override with MAX_OUTPUT_TOKENS; default high enough for reasoning summaries.
 	maxOut := 32_768
@@ -98,8 +86,54 @@ func main() {
 			maxOut = n
 		}
 	}
-	if maxOut > 0 {
-		model.WithMaxOutputTokens(maxOut)
+
+	var model tacklr.InferenceStrategy
+	switch apiStyle {
+	case "chat":
+		chatModel := inference.NewOpenRouterInferenceStrategy(&http.Client{
+			Timeout: 120 * time.Second,
+		})
+		chatModel.WithURL(os.Getenv("OPENAI_BASE_URL")).
+			WithApiKey(os.Getenv("OPENAI_API_KEY")).
+			WithModel(os.Getenv("OPENAI_MODEL"))
+		// Reasoning models stream client-visible thought when include_reasoning
+		// is on (WithReasoningLevel enables it) with reasoning.effort set.
+		// Override with OPENAI_REASONING_EFFORT (e.g. max/high/low).
+		if effort != "" {
+			chatModel.WithReasoningLevel(effort)
+		}
+		if maxOut > 0 {
+			chatModel.WithMaxOutputTokens(maxOut)
+		}
+		model = chatModel
+	default:
+		om := inference.NewOpenAIInferenceStrategy(&http.Client{
+			Timeout: 120 * time.Second,
+		})
+		om.WithURL(os.Getenv("OPENAI_BASE_URL")).
+			WithApiKey(os.Getenv("OPENAI_API_KEY")).
+			WithModel(os.Getenv("OPENAI_MODEL")).
+			WithLocalTokenFallback()
+
+		// Reasoning models (GPT Luna, o-series, …) only stream client-visible
+		// thought when the Responses request asks for a summary. Without this,
+		// Foundry may still emit reasoning items (needed for multi-turn tool
+		// pairing) but no reasoning_summary_text.delta — so Zed never gets
+		// agent_thought_chunk. Defaults: summary=auto. Override with
+		// OPENAI_REASONING_SUMMARY; set OPENAI_REASONING_EFFORT for effort (also
+		// implies summary=auto when unset).
+		if effort != "" {
+			om.WithReasoningLevel(effort)
+		}
+		if summary := strings.TrimSpace(os.Getenv("OPENAI_REASONING_SUMMARY")); summary != "" {
+			om.WithReasoningSummary(summary)
+		} else if effort == "" {
+			om.WithReasoningSummary("auto")
+		}
+		if maxOut > 0 {
+			om.WithMaxOutputTokens(maxOut)
+		}
+		model = om
 	}
 
 	// Context window budget (tokens) for pressure/compress.
