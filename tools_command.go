@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,17 +94,13 @@ func isExternalDownload(cmd string) bool {
 	if pipesToShell(cmd) {
 		return true
 	}
-	for _, stmt := range splitStatements(cmd) {
-		if downloadStatement(stmt) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(splitStatements(cmd), downloadStatement)
 }
 
 func splitStatements(cmd string) []string {
 	return strings.FieldsFunc(cmd, func(r rune) bool {
-		return r == '&' || r == '|' || r == ';' || r == '\n'
+		delimiters := []rune{'&', '|', ';', '\n'}
+		return slices.Contains(delimiters, r)
 	})
 }
 
@@ -116,13 +113,16 @@ var pipeShells = map[string]struct{}{
 // pipesToShell reports whether any pipe segment executes via a shell,
 // regardless of the producer (downloaded content or otherwise).
 func pipesToShell(cmd string) bool {
-	for _, seg := range strings.FieldsFunc(cmd, func(r rune) bool { return r == '|' }) {
+	segs := strings.FieldsFunc(cmd, func(r rune) bool { return r == '|' })
+	if len(segs) < 2 { // need at least one pipe for a sink to exist
+		return false
+	}
+	for _, seg := range segs[1:] { // skip first segment — it is never a pipe sink
 		f := strings.Fields(seg)
-		if len(f) == 0 {
-			continue
-		}
-		if _, ok := pipeShells[strings.ToLower(f[0])]; ok {
-			return true
+		if len(f) > 0 {
+			if _, ok := pipeShells[strings.ToLower(f[0])]; ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -143,7 +143,7 @@ var statementRules = map[string]statementRule{
 	"aria2c": {hasURL: true}, "axel": {hasURL: true}, "iwr": {hasURL: true},
 	"invoke-webrequest": {hasURL: true},
 
-	"git":        {prefix: [][]string{{"clone"}}},
+	"git":        {hasURL: true},
 	"npm":        {prefix: [][]string{{"install"}, {"i"}, {"ci"}}},
 	"yarn":       {prefix: [][]string{{"add"}}},
 	"pnpm":       {prefix: [][]string{{"add"}, {"install"}, {"i"}}},
@@ -227,7 +227,7 @@ func stripSudo(fields []string) []string {
 	}
 	rest := fields[1:]
 	for len(rest) > 0 {
-		if rest[0] == "-u" || rest[0] == "--user" {
+		if slices.Contains([]string{"-u", "--user"}, rest[0]) {
 			if len(rest) < 3 {
 				return nil
 			}
@@ -244,31 +244,15 @@ func stripSudo(fields []string) []string {
 }
 
 func fieldHasURL(fields []string) bool {
-	for _, f := range fields {
+	return slices.ContainsFunc(fields, func(f string) bool {
 		f = strings.TrimLeft(f, `"'`)
-		if strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://") {
-			return true
-		}
-	}
-	return false
+		return strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://")
+	})
 }
 
 // hasPrefix reports whether tail starts with any sequence in prefixes.
 func hasPrefix(tail []string, prefixes [][]string) bool {
-	for _, seq := range prefixes {
-		if len(tail) < len(seq) {
-			continue
-		}
-		matched := true
-		for i, s := range seq {
-			if tail[i] != s {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(prefixes, func(seq []string) bool {
+		return len(tail) >= len(seq) && slices.Equal(tail[:len(seq)], seq)
+	})
 }

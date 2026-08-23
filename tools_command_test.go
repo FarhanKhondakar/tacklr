@@ -363,7 +363,7 @@ func TestHarness_downloadApproval_parksDownloadAndPlainPerms(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ms.Close() })
 
-	ah := downloadTestHarness(t, ms, false, []string{"curl http://localhost:1/x -o /dev/null", "pwd"})
+	ah := downloadTestHarness(t, ms, false, []string{"go get", "pwd"})
 	ch1, err := ah.Run(t.Context(), "download then pwd")
 	if err != nil {
 		t.Fatal(err)
@@ -390,9 +390,11 @@ func TestHarness_downloadApproval_parksDownloadAndPlainPerms(t *testing.T) {
 	}
 
 	ch3 := resume(t, ah, id, "allow-once")
+	for range ch3 {
+	}
 	var ran int
-	for ev := range ch3 {
-		if ev.Type == streaming.StreamEventToolResult && strings.Contains(ev.Content, "exit=") {
+	for _, m := range ah.Messages() {
+		if m != nil && m.Role == RoleTool && strings.Contains(m.Content, "exit=") {
 			ran++
 		}
 	}
@@ -428,7 +430,7 @@ func TestHarness_downloadApproval_unattendedPlainPasses(t *testing.T) {
 // the download without invoking the handler.
 func TestHarness_downloadApproval_rejectDeniesWithoutRunning(t *testing.T) {
 	ms, _ := newRunCommandSession(t)
-	ah := downloadTestHarness(t, ms, true, []string{"curl http://localhost:1/x -o /dev/null"})
+	ah := downloadTestHarness(t, ms, true, []string{"go get"})
 	ch1, err := ah.Run(t.Context(), "download")
 	if err != nil {
 		t.Fatal(err)
@@ -470,7 +472,7 @@ func TestHarness_downloadApproval_allowAlwaysSkipsLaterDownloads(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ms.Close() })
 
-	ah := downloadTestHarness(t, ms, true, []string{"curl http://localhost:1/x -o /dev/null", "curl http://localhost:1/y -o /dev/null"})
+	ah := downloadTestHarness(t, ms, true, []string{"go get", "go get"})
 	ch1, err := ah.Run(t.Context(), "first download")
 	if err != nil {
 		t.Fatal(err)
