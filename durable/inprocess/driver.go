@@ -11,6 +11,7 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/internal/cgroup"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -145,6 +146,7 @@ func (r *Runtime) fail(ctx context.Context, p *sessionProc, err error) turnOutco
 }
 
 func (r *Runtime) runTurn(ctx context.Context, p *sessionProc, user *tacklr.Message, resume map[string][]byte, bindings []vfs.Binding, state map[string]any) turnOutcome {
+	ctx = cgroup.WithSession(ctx, p.cgroup)
 	h, ms, skillsMS, err := r.constructHarness(ctx, p, bindings, state)
 	if err != nil {
 		return r.fail(ctx, p, err)

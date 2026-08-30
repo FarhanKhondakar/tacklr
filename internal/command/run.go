@@ -12,18 +12,27 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/ryanaldo34/tacklr/internal/cgroup"
 )
 
 const outputCap = 1 << 20
 
 // Run executes command in the projected VFS directory and returns a bounded,
 // structured stdout/stderr result. Non-zero process exits are successful
-// outcomes; startup and context failures are errors.
+// outcomes; startup and context failures are errors. When ctx carries a
+// session cgroup (cgroup.WithSession) the shell is attached to that cgroup at
+// exec, so the process tree is attributable to the harness session.
 func Run(ctx context.Context, dir, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `cd "$1" && eval "$2"`, "run_command", dir, command)
 	cmd.Dir = os.TempDir()
 	cmd.Stdin = bytes.NewReader(nil)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if attach := sessionCgroupFd(ctx); attach != nil {
+		cmd.SysProcAttr.CgroupFD = attach.fd
+		cmd.SysProcAttr.UseCgroupFD = true
+		defer attach.close()
+	}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -51,6 +60,29 @@ func Run(ctx context.Context, dir, command string) (string, error) {
 		}
 	}
 	return formatResult(exit, budget.truncated, stdout, stderr), nil
+}
+
+// cgroupFd is an open fd on a session cgroup directory. It is consumed by the
+// runtime at fork (CgroupFD) and must stay open until exec, so close() runs
+// after Start.
+type cgroupFd struct {
+	fd    int
+	close func()
+}
+
+// sessionCgroupFd opens the turn's session cgroup for exec-time attachment. It
+// returns nil when ctx has no session cgroup or the directory cannot be
+// opened, so the command runs ungrouped rather than failing.
+func sessionCgroupFd(ctx context.Context) *cgroupFd {
+	sess := cgroup.FromContext(ctx)
+	if sess == nil || !sess.IsActive() {
+		return nil
+	}
+	f, err := os.Open(sess.Path())
+	if err != nil {
+		return nil
+	}
+	return &cgroupFd{fd: int(f.Fd()), close: func() { _ = f.Close() }}
 }
 
 func formatResult(exit int, truncated bool, stdout, stderr *budgetWriter) string {

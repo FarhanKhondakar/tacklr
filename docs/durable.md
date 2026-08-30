@@ -40,6 +40,24 @@ One goroutine per session runs the harness wait loop. HITL parks that goroutine 
 
 `Status` and the stream agree on when a turn finished. `StreamEventComplete` is published only after the checkpoint is saved and `Status` is already `complete`. `StreamEventError` that ends the turn is the same for `failed`. Park publishes `yield`; `Status` stays `running` with `Waiting` true. A later `Prompt` on a completed session starts a new turn: when `Prompt` returns, `Status` is `running` again.
 
+### Per-session cgroups
+
+The in-process runtime can isolate each session's spawned processes in a cgroup v2 subtree so a host security monitor can attribute any PID back to its harness session. Wire it with `inprocess.Config.CgroupRoot`:
+
+```go
+rt := inprocess.New(inprocess.Config{
+	Catalog:    cat,
+	Projection: vfs.DirectProjection{},
+	CgroupRoot: "/sys/fs/cgroup/harness",
+})
+```
+
+On `CreateSession` the runtime provisions one cgroup per session (children included, named from the child session id). `run_command` attaches its shell at exec through `SysProcAttr.CgroupFD`, so the process tree — including background children — lands in the session cgroup with no race. On `Close` the runtime writes `cgroup.kill`, terminating survivors, then removes the directory. `New` reaps orphaned session cgroups left by a crashed harness.
+
+The subtree needs a writable cgroup v2 mount. When it is not usable (no systemd/rootless without a delegated subtree, read-only, unmounted) the runtime degrades: it logs once and runs sessions without isolation — session creation never fails because of cgroups. Deployment options for the subtree: run the harness privileged, pre-create `/sys/fs/cgroup/harness` and chown it to the harness user, or run the harness as a systemd unit with `Delegate=yes` so systemd keeps its hands off the subtree.
+
+**PID → session resolution.** The mapping is deterministic and host-readable without any Tacklr API. A session cgroup lives at `/sys/fs/cgroup/harness/<encoded>`, where `<encoded>` is a reversible encoding of the `durable.SessionID` that keeps `[A-Za-z0-9_.-]` and escapes every other byte (including `/` and `_`) as `_<hex>` (for example the child session `parent/w/researcher/c1` becomes `parent_2fw_2fresearcher_2fc1`). A monitor that receives an event with a PID can resolve it from `/proc/<pid>/cgroup` by finding the `harness` path segment and decoding the next one. `internal/cgroup.SessionIDForPID` does exactly that. Sessions that degraded (no cgroup) simply have no matching segment.
+
 ## Temporal
 
 The host runs:

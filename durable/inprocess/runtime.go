@@ -3,6 +3,7 @@ package inprocess
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/internal/cgroup"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -62,6 +64,10 @@ type sessionProc struct {
 	// state is CreateSession.State until the first persist writes it into the checkpoint.
 	state map[string]any
 
+	// cgroup is this session's cgroup v2 handle, or nil when cgroups are not
+	// configured. It is created at CreateSession and removed at Close.
+	cgroup *cgroup.Session
+
 	// kids is the parent context for child Prompt. Canceled by stopChildren
 	// (Cancel, Close, client-stopped turn). Not canceled when a turn parks.
 	kids     context.Context
@@ -74,6 +80,7 @@ type Runtime struct {
 	snapshots  durable.SnapshotStore
 	events     *MemoryEventLog
 	projection vfs.Projection
+	cgroups    *cgroup.Manager
 
 	mu       sync.RWMutex
 	sessions map[durable.SessionID]*sessionProc
@@ -84,6 +91,13 @@ type Config struct {
 	Catalog    durable.Catalog
 	Snapshots  durable.SnapshotStore
 	Projection vfs.Projection
+	// CgroupRoot, when non-empty, enables per-session cgroup v2 isolation
+	// under this subtree (for example "/sys/fs/cgroup/harness"). Each session
+	// gets a cgroup there; run_command processes land in it so a host security
+	// monitor can attribute PIDs back to sessions. An unwritable or missing
+	// subtree degrades gracefully: sessions run without isolation and only a
+	// warning is logged. Empty disables cgroup isolation.
+	CgroupRoot string
 }
 
 // New constructs an in-process Runtime.
@@ -99,13 +113,18 @@ func New(cfg Config) *Runtime {
 	if snaps == nil {
 		snaps = NewMemorySnapshot()
 	}
-	return &Runtime{
+	r := &Runtime{
 		catalog:    cfg.Catalog,
 		snapshots:  snaps,
 		events:     NewMemoryEventLog(),
 		projection: proj,
 		sessions:   make(map[durable.SessionID]*sessionProc),
 	}
+	if cfg.CgroupRoot != "" {
+		r.cgroups = cgroup.NewManager(cfg.CgroupRoot)
+		r.cgroups.Reap(context.Background())
+	}
+	return r
 }
 
 // CreateSession implements durable.Runtime.
@@ -183,6 +202,14 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 		p.auth = parent.auth
 	}
 	p.state = seed
+	if r.cgroups != nil {
+		cg, err := r.cgroups.Create(ctx, string(id))
+		if err != nil {
+			slog.WarnContext(ctx, "session cgroup unavailable; session will not be process-isolated", "session_id", id, "error", err)
+		} else {
+			p.cgroup = cg
+		}
+	}
 	r.sessions[id] = p
 	if parent != nil {
 		parent.mu.Lock()
@@ -354,6 +381,12 @@ func (r *Runtime) Close(ctx context.Context, sessionID durable.SessionID) error 
 	_ = r.snapshots.Delete(ctx, sessionID)
 	_ = r.events.CloseSession(ctx, sessionID)
 	durable.ClearSessionVFS(r.catalog, sessionID)
+	if p.cgroup != nil {
+		if err := r.cgroups.Close(p.cgroup); err != nil {
+			slog.WarnContext(context.WithoutCancel(ctx), "session cgroup cleanup failed", "session_id", sessionID, "error", err)
+		}
+		p.cgroup = nil
+	}
 	r.mu.Lock()
 	delete(r.sessions, sessionID)
 	r.mu.Unlock()
