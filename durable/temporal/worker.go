@@ -4,6 +4,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/ryanaldo34/tacklr/internal/cgroup"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -31,6 +32,9 @@ func NewWorker(c client.Client, cfg Config) worker.Worker {
 		Projection:     proj,
 		Fallback:       fallback,
 		DisableStreams: cfg.DisableStreams,
+	}
+	if cfg.CgroupRoot != "" {
+		acts.cgroups = cgroup.NewManager(cfg.CgroupRoot)
 	}
 	w.RegisterWorkflow(SessionWorkflow)
 	w.RegisterActivity(acts)

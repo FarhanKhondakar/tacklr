@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/durable/inprocess"
+	"github.com/ryanaldo34/tacklr/internal/cgroup"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -30,6 +32,7 @@ type Runtime struct {
 	activityTimeout     time.Duration
 	heartbeatTimeout    time.Duration
 	activityAttempts    int32
+	cgroups             *cgroup.Manager
 
 	mu     sync.Mutex
 	closed map[durable.SessionID]struct{}
@@ -80,6 +83,13 @@ type Config struct {
 	HeartbeatTimeout time.Duration
 	// ActivityAttempts is Temporal MaximumAttempts. Zero is 3. 1 means no retry.
 	ActivityAttempts int32
+	// CgroupRoot, when non-empty, enables per-session cgroup v2 isolation
+	// under this subtree (for example "/sys/fs/cgroup/harness"). Each session
+	// gets a cgroup here; the Inference/Tool activities attach run_command
+	// processes at exec and this runtime kills + removes the cgroup on Close.
+	// An unwritable or missing subtree degrades gracefully: sessions run
+	// without isolation and only a warning is logged. Empty disables isolation.
+	CgroupRoot string
 }
 
 func (c Config) queue() string {
@@ -112,7 +122,7 @@ func New(c client.Client, cfg Config) *Runtime {
 	if cfg.Catalog == nil {
 		panic("temporal: Catalog is required")
 	}
-	return &Runtime{
+	r := &Runtime{
 		client:              c,
 		taskQueue:           cfg.queue(),
 		catalog:             cfg.Catalog,
@@ -125,6 +135,11 @@ func New(c client.Client, cfg Config) *Runtime {
 		activityAttempts:    resolveActivityAttempts(cfg.ActivityAttempts),
 		closed:              make(map[durable.SessionID]struct{}),
 	}
+	if cfg.CgroupRoot != "" {
+		r.cgroups = cgroup.NewManager(cfg.CgroupRoot)
+		r.cgroups.Reap(context.Background())
+	}
+	return r
 }
 
 // CreateSession implements durable.Runtime.
@@ -144,6 +159,14 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 	if err != nil {
 		return "", err
 	}
+	created := false
+	if r.cgroups != nil {
+		if _, err := r.cgroups.Create(ctx, string(id)); err != nil {
+			slog.WarnContext(ctx, "session cgroup unavailable; session will not be process-isolated", "session_id", id, "error", err)
+		} else {
+			created = true
+		}
+	}
 	_, err = r.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:        string(id),
 		TaskQueue: r.taskQueue,
@@ -159,6 +182,9 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 		State:               seed,
 	})
 	if err != nil {
+		if created {
+			_ = r.cgroups.Close(r.cgroups.Session(string(id)))
+		}
 		return "", err
 	}
 	return id, nil
@@ -230,12 +256,39 @@ func (r *Runtime) Cancel(ctx context.Context, sessionID durable.SessionID) error
 
 // Close implements durable.Runtime.
 func (r *Runtime) Close(ctx context.Context, sessionID durable.SessionID) error {
+	// Resolve the descendant ids before markClosed: Children rejects closed ids.
+	var kids []durable.SessionID
+	if r.cgroups != nil && !r.isClosed(sessionID) {
+		kids, _ = r.Children(ctx, sessionID)
+	}
 	r.markClosed(sessionID)
 	_ = r.signal(ctx, sessionID, signalClose, nil)
 	_ = r.snapshots.Delete(ctx, sessionID)
 	_ = r.fallback.CloseSession(ctx, sessionID)
 	durable.ClearSessionVFS(r.catalog, sessionID)
+	if r.cgroups != nil {
+		r.closeCgroupTree(ctx, sessionID, kids)
+	}
 	return nil
+}
+
+// closeCgroupTree kills and removes the cgroup of sessionID and every
+// descendant. Top-level sessions were provisioned by CreateSession; child
+// workflows never pass through CreateSession, so their cgroups were created by
+// the Inference/Tool activities and only become disposable here. Derived
+// handles are pure path math (cgroup.Session), so closing a never-provisioned
+// id is a harmless no-op.
+func (r *Runtime) closeCgroupTree(ctx context.Context, id durable.SessionID, kids []durable.SessionID) {
+	if err := r.cgroups.Close(r.cgroups.Session(string(id))); err != nil {
+		slog.WarnContext(context.WithoutCancel(ctx), "session cgroup cleanup failed", "session_id", id, "error", err)
+	}
+	for _, kid := range kids {
+		var grand []durable.SessionID
+		if !r.isClosed(kid) {
+			grand, _ = r.Children(ctx, kid)
+		}
+		r.closeCgroupTree(ctx, kid, grand)
+	}
 }
 
 type sub struct {

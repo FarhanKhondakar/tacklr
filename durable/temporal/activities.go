@@ -14,6 +14,7 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/internal/cgroup"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -51,6 +52,24 @@ type Activities struct {
 	Projection     vfs.Projection
 	Fallback       durable.EventLog
 	DisableStreams bool
+	// cgroups, when non-nil, isolates each session's run_command processes in
+	// a cgroup v2 subtree. NewWorker builds it from Config.CgroupRoot; an
+	// unwritable subtree degrades gracefully (processes run ungrouped).
+	cgroups *cgroup.Manager
+}
+
+// bindCgroup attaches the session cgroup to ctx so run_command execs into it.
+// It returns ctx unchanged when cgroups are disabled or the subtree is
+// unusable (the Manager logs the disable once).
+func (a *Activities) bindCgroup(ctx context.Context, id durable.SessionID) context.Context {
+	if a.cgroups == nil {
+		return ctx
+	}
+	sess, err := a.cgroups.Create(ctx, string(id))
+	if err != nil {
+		return ctx
+	}
+	return cgroup.WithSession(ctx, sess)
 }
 
 // InferenceInput is the typed Inference activity argument.
@@ -123,6 +142,7 @@ func (a *Activities) Inference(ctx context.Context, in InferenceInput) (Inferenc
 	defer bindLiveTurn(in.SessionID, cancel)()
 	defer startHeartbeat(ctx)()
 	ctx = telemetry.BindTurnContext(ctx, in.AgentID, string(in.SessionID))
+	ctx = a.bindCgroup(ctx, in.SessionID)
 	attempt := int32(1)
 	if activity.IsActivity(ctx) {
 		attempt = activity.GetInfo(ctx).Attempt
@@ -205,6 +225,7 @@ func (a *Activities) Tool(ctx context.Context, in ToolInput) (ToolOutput, error)
 	defer bindLiveTurn(in.SessionID, cancel)()
 	defer startHeartbeat(ctx)()
 	ctx = telemetry.BindTurnContext(ctx, in.AgentID, string(in.SessionID))
+	ctx = a.bindCgroup(ctx, in.SessionID)
 	attempt := int32(1)
 	if activity.IsActivity(ctx) {
 		attempt = activity.GetInfo(ctx).Attempt
