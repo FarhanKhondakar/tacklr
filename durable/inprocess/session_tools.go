@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
 	adapter "github.com/ryanaldo34/tacklr/durable/internal"
-	"github.com/ryanaldo34/tacklr/interrupt"
 )
 
 func (r *Runtime) childStatuses(p *sessionProc) []durable.SessionStatus {
@@ -28,17 +26,79 @@ func (r *Runtime) childStatuses(p *sessionProc) []durable.SessionStatus {
 	return out
 }
 
-// sessionChildren is the nested-session childHost for one parent session.
-type sessionChildren struct {
+func (r *Runtime) harvestJobs(p *sessionProc) int {
+	rows := r.childStatuses(p)
+	var steers []*tacklr.Message
+	var drop []durable.SessionID
+	live := 0
+	for _, st := range rows {
+		if st.State != durable.SessionComplete && st.State != durable.SessionFailed {
+			live++
+			continue
+		}
+		steers = append(steers, adapter.ChildJobMessage(st))
+		drop = append(drop, st.ID)
+	}
+	p.mu.Lock()
+	if len(drop) > 0 {
+		p.children = slices.DeleteFunc(p.children, func(c durable.SessionID) bool {
+			return slices.Contains(drop, c)
+		})
+	}
+	if len(steers) > 0 {
+		p.inbox.Push(steers...)
+	}
+	p.mu.Unlock()
+	return live
+}
+
+func (r *Runtime) drainInbox(ctx context.Context, p *sessionProc, eng tacklr.Engine, out chan tacklr.StreamEvent) (int, int, error) {
+	live := r.harvestJobs(p)
+	msgs := p.inbox.Take()
+	n, err := adapter.AbsorbAll(ctx, eng.AbsorbUser, msgs, out)
+	return n, live, err
+}
+
+func (r *Runtime) waitJobs(ctx context.Context, p *sessionProc) error {
+	p.mu.Lock()
+	wake := p.wake
+	p.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-wake:
+		return nil
+	}
+}
+
+// sessionJobs is the JobHost for one parent session.
+type sessionJobs struct {
 	r *Runtime
 	p *sessionProc
 }
 
-func (s sessionChildren) SpawnChild(ctx context.Context, specialist, task, callID string) (string, error) {
-	specialist, task, err := adapter.NormalizeSpawn(specialist, task)
+func (s sessionJobs) Schedule(ctx context.Context, job tacklr.JobRequest, callID string) (tacklr.Job, error) {
+	name, task, err := adapter.NormalizeSpawn(job.Name, job.Task)
 	if err != nil {
-		return "", err
+		return tacklr.Job{}, err
 	}
+	s.p.mu.Lock()
+	agentID := s.p.agentID
+	s.p.mu.Unlock()
+	if adapter.HasSpecialist(s.r.catalog, agentID, name) {
+		id, err := s.spawnSpecialist(ctx, name, task, callID)
+		if err != nil {
+			return tacklr.Job{}, err
+		}
+		return tacklr.Job{ID: id, Name: name, State: tacklr.JobRunning}, nil
+	}
+	if _, ok := s.r.jobs[name]; !ok {
+		return tacklr.Job{}, fmt.Errorf("%w: %s", tacklr.ErrNotFound, name)
+	}
+	return s.startWorker(ctx, name, task, callID)
+}
+
+func (s sessionJobs) spawnSpecialist(ctx context.Context, specialist, task, callID string) (string, error) {
 	childID := durable.ChildSessionID(s.p.id, specialist, callID)
 	if s.r.ownsChild(s.p, childID) {
 		return string(childID), nil
@@ -46,13 +106,20 @@ func (s sessionChildren) SpawnChild(ctx context.Context, specialist, task, callI
 	if task == "" {
 		return "", fmt.Errorf("task_description_and_context is required: %w", tacklr.ErrInvalid)
 	}
+	s.p.mu.Lock()
+	agentID := s.p.agentID
+	mcp := slices.Clone(s.p.mcp)
+	mounts := slices.Clone(s.p.mounts)
+	auth := s.p.auth
+	parent := s.p.id
+	s.p.mu.Unlock()
 	id, err := s.r.CreateSession(ctx, durable.CreateSession{
 		SessionID:  childID,
-		Parent:     s.p.id,
-		AgentID:    s.p.agentID,
+		Parent:     parent,
+		AgentID:    agentID,
 		Specialist: specialist,
-		MCPServers: s.p.mcp,
-		Mounts:     s.p.mounts,
+		MCPServers: mcp,
+		Mounts:     mounts,
 	})
 	if err != nil {
 		if errors.Is(err, durable.ErrAgentNotFound) {
@@ -65,22 +132,59 @@ func (s sessionChildren) SpawnChild(ctx context.Context, specialist, task, callI
 		s.r.dropChild(s.p, id)
 		return "", err
 	}
-	if err := s.r.Prompt(s.p.childCtx(), id, durable.Prompt{Text: task, Auth: s.p.auth}); err != nil {
+	if err := s.r.Prompt(s.p.childCtx(), id, durable.Prompt{Text: task, Auth: auth}); err != nil {
 		return "", err
 	}
 	return string(id), nil
 }
 
-func (s sessionChildren) Children() []tacklr.Child {
+func (s sessionJobs) startWorker(ctx context.Context, name, task, callID string) (tacklr.Job, error) {
+	childID := durable.JobID(s.p.id, name, callID)
+	if s.r.ownsChild(s.p, childID) {
+		return tacklr.Job{ID: string(childID), Name: name, State: tacklr.JobRunning}, nil
+	}
+	if task == "" {
+		return tacklr.Job{}, fmt.Errorf("task is required: %w", tacklr.ErrInvalid)
+	}
+	s.p.mu.Lock()
+	agentID := s.p.agentID
+	mcp := slices.Clone(s.p.mcp)
+	mounts := slices.Clone(s.p.mounts)
+	auth := s.p.auth
+	parent := s.p.id
+	s.p.mu.Unlock()
+	id, err := s.r.CreateSession(ctx, durable.CreateSession{
+		SessionID:  childID,
+		Parent:     parent,
+		AgentID:    agentID,
+		Worker:     name,
+		MCPServers: mcp,
+		Mounts:     mounts,
+	})
+	if err != nil {
+		return tacklr.Job{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = s.r.Close(context.WithoutCancel(ctx), id)
+		s.r.dropChild(s.p, id)
+		return tacklr.Job{}, err
+	}
+	if err := s.r.Prompt(s.p.childCtx(), id, durable.Prompt{Text: task, Auth: auth}); err != nil {
+		return tacklr.Job{}, err
+	}
+	return tacklr.Job{ID: string(id), Name: name, State: tacklr.JobRunning}, nil
+}
+
+func (s sessionJobs) Jobs() []tacklr.Job {
 	rows := s.r.childStatuses(s.p)
-	out := make([]tacklr.Child, 0, len(rows))
+	out := make([]tacklr.Job, 0, len(rows))
 	for _, st := range rows {
-		out = append(out, childFromStatus(st))
+		out = append(out, jobFromStatus(st))
 	}
 	return out
 }
 
-func (s sessionChildren) CancelChild(ctx context.Context, id string) error {
+func (s sessionJobs) CancelJob(ctx context.Context, id string) error {
 	sid := durable.SessionID(id)
 	if !s.r.ownsChild(s.p, sid) {
 		return adapter.UnknownChild(id)
@@ -90,67 +194,54 @@ func (s sessionChildren) CancelChild(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s sessionChildren) AwaitChild(ctx context.Context, id, callID string) (tacklr.Child, error) {
+func (s sessionJobs) RunSpecialist(ctx context.Context, name, task, callID string) (string, error) {
+	s.p.mu.Lock()
+	agentID := s.p.agentID
+	s.p.mu.Unlock()
+	if !adapter.HasSpecialist(s.r.catalog, agentID, name) {
+		return "", fmt.Errorf("%w: %s", tacklr.ErrNotFound, name)
+	}
+	id, err := s.spawnSpecialist(ctx, name, task, callID)
+	if err != nil {
+		return "", err
+	}
 	sid := durable.SessionID(id)
-	if !s.r.ownsChild(s.p, sid) {
-		return tacklr.Child{}, adapter.UnknownChild(id)
-	}
-	return s.r.waitChild(ctx, s.p, sid, callID)
-}
-
-func childFromStatus(st durable.SessionStatus) tacklr.Child {
-	c := tacklr.Child{ID: string(st.ID), Specialist: st.Specialist, State: adapter.ChildState(st.State), Result: st.Result}
-	if st.State == durable.SessionFailed && c.Result == "" && st.Err != nil {
-		c.Result = st.Err.Error()
-	}
-	return c
-}
-
-func (r *Runtime) waitChild(ctx context.Context, p *sessionProc, child durable.SessionID, callID string) (tacklr.Child, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return tacklr.Child{}, err
+			return "", err
 		}
-		st, err := r.Status(ctx, child)
+		st, err := s.r.Status(ctx, sid)
 		if err != nil {
-			return tacklr.Child{}, err
+			return "", err
 		}
-		switch st.State {
-		case durable.SessionComplete, durable.SessionFailed:
-			r.dropChild(p, child)
-			c := childFromStatus(st)
+		if st.State == durable.SessionComplete || st.State == durable.SessionFailed {
+			s.r.dropChild(s.p, sid)
 			if st.State == durable.SessionFailed {
 				err = st.Err
 				if err == nil {
 					err = fmt.Errorf("failed: %w", tacklr.ErrFailed)
 				}
-				return c, err
+				if st.Result != "" {
+					return st.Result, err
+				}
+				return "", err
 			}
-			return c, nil
-		}
-		if st.Waiting {
-			p.mu.Lock()
-			p.childParks[callID] = child
-			p.mu.Unlock()
-			return tacklr.Child{}, &interrupt.ChildWaiting{Kind: interrupt.TypeChildWaiting}
-		}
-		cp, err := r.get(child)
-		if err != nil {
-			return tacklr.Child{}, err
-		}
-		cp.mu.Lock()
-		done := cp.turnDone
-		cp.mu.Unlock()
-		if done == nil {
-			<-ctx.Done()
-			return tacklr.Child{}, ctx.Err()
+			return st.Result, nil
 		}
 		select {
 		case <-ctx.Done():
-			return tacklr.Child{}, ctx.Err()
-		case <-done:
+			return "", ctx.Err()
+		case <-s.p.wake:
 		}
 	}
+}
+
+func jobFromStatus(st durable.SessionStatus) tacklr.Job {
+	j := tacklr.Job{ID: string(st.ID), Name: st.Specialist, State: adapter.ChildState(st.State), Result: st.Result}
+	if st.State == durable.SessionFailed && j.Result == "" && st.Err != nil {
+		j.Result = st.Err.Error()
+	}
+	return j
 }
 
 func (r *Runtime) ownsChild(p *sessionProc, id durable.SessionID) bool {
@@ -163,33 +254,4 @@ func (r *Runtime) dropChild(p *sessionProc, id durable.SessionID) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.children = slices.DeleteFunc(p.children, func(c durable.SessionID) bool { return c == id })
-}
-
-func (r *Runtime) forwardChildResume(ctx context.Context, p *sessionProc, resume durable.Resume) {
-	p.mu.Lock()
-	parks := maps.Clone(p.childParks)
-	p.mu.Unlock()
-	for callID, payload := range resume.Responses {
-		childID, ok := parks[callID]
-		if !ok {
-			continue
-		}
-		mapped := map[string][]byte{callID: payload}
-		if snap, _, err := r.snapshots.Load(context.Background(), childID); err == nil {
-			pending := snap.Checkpoint.PendingToolCalls()
-			ids := make(map[string][]byte, len(pending))
-			for k, ptc := range pending {
-				if ptc.InterruptActive {
-					ids[k] = payload
-				}
-			}
-			if len(ids) > 0 {
-				mapped = ids
-			}
-		}
-		_ = r.Resume(ctx, childID, durable.Resume{Responses: mapped, Auth: resume.Auth})
-		p.mu.Lock()
-		delete(p.childParks, callID)
-		p.mu.Unlock()
-	}
 }

@@ -7,6 +7,7 @@ package temporal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type Runtime struct {
 	heartbeatTimeout    time.Duration
 	activityAttempts    int32
 	secrets             durable.SecretStorage
+	jobs                map[string]durable.JobHandler
 
 	mu     sync.Mutex
 	closed map[durable.SessionID]struct{}
@@ -92,6 +94,9 @@ type Config struct {
 	// Secrets holds work-item credentials for activities. Required. New and
 	// NewWorker must share the same instance. Tokens never enter event history.
 	Secrets durable.SecretStorage
+	// Jobs are named background workers Schedule can start. Specialist
+	// names on the catalog take precedence.
+	Jobs map[string]durable.JobHandler
 }
 
 func (c Config) queue() string {
@@ -139,6 +144,7 @@ func New(c client.Client, cfg Config) *Runtime {
 		heartbeatTimeout:    resolveHeartbeatTimeout(cfg.HeartbeatTimeout),
 		activityAttempts:    resolveActivityAttempts(cfg.ActivityAttempts),
 		secrets:             cfg.Secrets,
+		jobs:                cfg.Jobs,
 		closed:              make(map[durable.SessionID]struct{}),
 	}
 }
@@ -151,6 +157,14 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 	}
 	if _, ok := r.catalog.Lookup(agentID); !ok {
 		return "", durable.ErrAgentNotFound
+	}
+	if req.Worker != "" && req.Specialist != "" {
+		return "", fmt.Errorf("specialist and worker are exclusive: %w", tacklr.ErrInvalid)
+	}
+	if req.Worker != "" {
+		if _, ok := r.jobs[req.Worker]; !ok {
+			return "", fmt.Errorf("%w: %s", tacklr.ErrNotFound, req.Worker)
+		}
 	}
 	id := req.SessionID
 	if id == "" {
@@ -173,6 +187,9 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 		HeartbeatTimeout:    r.heartbeatTimeout,
 		ActivityAttempts:    r.activityAttempts,
 		State:               seed,
+		Parent:              req.Parent,
+		Specialist:          req.Specialist,
+		Worker:              req.Worker,
 	})
 	if err != nil {
 		return "", err
@@ -358,6 +375,23 @@ func (r *Runtime) Children(ctx context.Context, parent durable.SessionID) ([]dur
 	var ids []durable.SessionID
 	_ = val.Get(&ids)
 	return ids, nil
+}
+
+// Jobs implements durable.Runtime.
+func (r *Runtime) Jobs(ctx context.Context, parent durable.SessionID) ([]durable.SessionStatus, error) {
+	ids, err := r.Children(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]durable.SessionStatus, 0, len(ids))
+	for _, id := range ids {
+		st, err := r.Status(ctx, id)
+		if err != nil {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out, nil
 }
 
 // Status implements durable.Runtime.

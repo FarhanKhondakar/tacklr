@@ -85,29 +85,38 @@ type AgentWatchDog interface {
 	RecordToolResult(*Message) error
 }
 
-// Child is one child of the current session as tools may see it.
-// State is running, completed, or failed. A child waiting for input stays running.
-type Child struct {
-	ID         string
-	Specialist string
-	State      string
-	Result     string
+// Job is one background job of the current session as tools may see it.
+// State is running, completed, or failed. A specialist child waiting for
+// input stays running. Name is the specialist or registered worker.
+type Job struct {
+	ID     string
+	Name   string
+	State  string
+	Result string
 }
 
-// Parent-facing child states. Waiting for input is still running.
+// JobRequest is Schedule input. Name is a specialist or a Runtime job worker.
+type JobRequest struct {
+	Name string
+	Task string
+}
+
+// Parent-facing job states. A specialist child waiting for input stays running.
 const (
-	ChildRunning   = "running"
-	ChildCompleted = "completed"
-	ChildFailed    = "failed"
+	JobRunning     = "running"
+	JobCompleted   = "completed"
+	JobFailed      = "failed"
+	ChildRunning   = JobRunning
+	ChildCompleted = JobCompleted
+	ChildFailed    = JobFailed
 )
 
 // HarnessRuntime is the tool-facing hook for one harness turn.
 // Tools emit progress, read/write user session state, Park, and
-// spawn/list/await/cancel children of this session. Session modules (plan,
+// run specialists or schedule jobs of this session. Session modules (plan,
 // permissions, on-call) are not on this interface.
 //
-// Child methods are the only way tools start nested agents. Built-in
-// spawn_specialist / list_children / get_child / cancel_child call these.
+// Built-in spawn_specialist / list_children / cancel_child call these.
 // Host tools may call them too. The loop never matches those tool names.
 type HarnessRuntime interface {
 	EmitUpdate(message string)
@@ -119,18 +128,30 @@ type HarnessRuntime interface {
 	Park(kind string, payload []byte) (Interrupt, error)
 	CurrentToolCallID() string
 
-	// SpawnChild starts a child of this session. It does not wait.
-	// specialist must be registered on this session. The returned id is
-	// unique for this session; pass it to Children, AwaitChild, CancelChild.
-	SpawnChild(ctx context.Context, specialist, task string) (id string, err error)
-	// Children lists this session's children. Waiting children appear as running.
-	Children() []Child
-	// CancelChild stops one child of this session and drops it from Children.
-	CancelChild(ctx context.Context, id string) error
-	// AwaitChild waits until a child completes or fails, then collects it
-	// (it leaves Children). If the child needs user input, the call parks
-	// like Park. Unknown ids return ErrNotFound.
-	AwaitChild(ctx context.Context, id string) (Child, error)
+	// RunSpecialist starts a nested specialist session and returns its result.
+	// The tool call stays open until the child completes. This is not a job:
+	// no inbox message, and the child is dropped when this returns.
+	RunSpecialist(ctx context.Context, name, task string) (string, error)
+	// Schedule starts a job of this session. It does not wait.
+	// Name is a registered specialist or Runtime job worker. The result
+	// arrives later as an inbox message. Pass the id to Jobs or CancelJob.
+	Schedule(ctx context.Context, job JobRequest) (Job, error)
+	// Jobs lists this session's jobs. Waiting specialist children appear as running.
+	Jobs() []Job
+	// CancelJob stops one job of this session and drops it from Jobs.
+	CancelJob(ctx context.Context, id string) error
+}
+
+// JobWaitError is returned by the Temporal JobHost so the Tool activity can
+// return without writing a tool result. The workflow waits on the child, then
+// RecordToolResult. In-process RunSpecialist blocks and never returns this.
+type JobWaitError struct{ ID string }
+
+func (e *JobWaitError) Error() string {
+	if e == nil || e.ID == "" {
+		return "wait for child"
+	}
+	return "wait for child " + e.ID
 }
 
 // Interrupt types re-exported for tool authors.

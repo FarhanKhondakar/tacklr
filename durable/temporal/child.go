@@ -11,30 +11,35 @@ import (
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
 	adapter "github.com/ryanaldo34/tacklr/durable/internal"
-	"github.com/ryanaldo34/tacklr/interrupt"
 )
 
-// childRun is one child workflow tracked by the parent.
+// childRun is one job tracked by the parent: a child session or a RunJob activity.
 type childRun struct {
-	id      durable.SessionID
-	spec    string
-	fut     workflow.ChildWorkflowFuture
-	waiting bool
-	done    bool
-	result  string
-	err     string
+	id     durable.SessionID
+	spec   string
+	fut    workflow.Future
+	child  workflow.ChildWorkflowFuture
+	cancel workflow.CancelFunc
+	done   bool
+	result string
+	err    string
 }
 
-func startChild(ctx, sessionCtx workflow.Context, parent durable.SessionID, agentID, specialist, task string, childID durable.SessionID, mounts []durable.MountRecipe, in workflowInput) (childRun, error) {
+func startChild(ctx, sessionCtx workflow.Context, parent durable.SessionID, agentID, specialist, worker, task string, childID durable.SessionID, mounts []durable.MountRecipe, in workflowInput) (childRun, error) {
 	cctx := workflow.WithChildOptions(sessionCtx, workflow.ChildWorkflowOptions{
 		WorkflowID:        string(childID),
 		ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 	})
+	name := specialist
+	if worker != "" {
+		name = worker
+	}
 	fut := workflow.ExecuteChildWorkflow(cctx, SessionWorkflow, workflowInput{
 		SessionID:           childID,
 		AgentID:             agentID,
 		Parent:              parent,
 		Specialist:          specialist,
+		Worker:              worker,
 		Prompt:              task,
 		Mounts:              mounts,
 		TurnLocalityTimeout: in.TurnLocalityTimeout,
@@ -46,7 +51,7 @@ func startChild(ctx, sessionCtx workflow.Context, parent durable.SessionID, agen
 	if err := fut.GetChildWorkflowExecution().Get(ctx, &exec); err != nil {
 		return childRun{}, err
 	}
-	return childRun{id: childID, spec: specialist, fut: fut}, nil
+	return childRun{id: childID, spec: name, fut: fut, child: fut}, nil
 }
 
 func findChild(spawned []childRun, id durable.SessionID) int {
@@ -65,15 +70,56 @@ func spawnedIDs(spawned []childRun) []durable.SessionID {
 	return out
 }
 
-func spawnedNudge(spawned []childRun) string {
-	if len(spawned) == 0 {
-		return ""
+func markChildDone(spawned *[]childRun, id durable.SessionID, result string, err error) *tacklr.Message {
+	i := findChild(*spawned, id)
+	if i < 0 {
+		return nil
 	}
-	rows := make([]durable.SessionStatus, len(spawned))
-	for i, c := range spawned {
-		rows[i] = durable.SessionStatus{ID: c.id, Specialist: c.spec, State: durable.SessionRunning}
+	c := (*spawned)[i]
+	dropChild(spawned, id)
+	st := durable.SessionStatus{ID: c.id, Specialist: c.spec, Result: result, State: durable.SessionComplete}
+	if err != nil {
+		st.State = durable.SessionFailed
+		st.Result = err.Error()
 	}
-	return adapter.ChildrenNudge(rows)
+	return adapter.ChildJobMessage(st)
+}
+
+func harvestReadyChildren(ctx workflow.Context, spawned *[]childRun, inbox *[]*tacklr.Message) {
+	for {
+		if len(*spawned) == 0 {
+			return
+		}
+		var gotID durable.SessionID
+		var gotResult string
+		var gotErr error
+		ready := false
+		pending := 0
+		s := workflow.NewSelector(ctx)
+		for _, c := range *spawned {
+			if c.done {
+				continue
+			}
+			pending++
+			id := c.id
+			s.AddFuture(c.fut, func(f workflow.Future) {
+				var result string
+				err := f.Get(ctx, &result)
+				gotID, gotResult, gotErr, ready = id, result, err, true
+			})
+		}
+		if pending == 0 {
+			return
+		}
+		s.AddDefault(func() {})
+		s.Select(ctx)
+		if !ready {
+			return
+		}
+		if msg := markChildDone(spawned, gotID, gotResult, gotErr); msg != nil {
+			*inbox = adapter.AppendMessages(*inbox, msg)
+		}
+	}
 }
 
 func cancelOne(ctx workflow.Context, spawned *[]childRun, id durable.SessionID) {
@@ -82,8 +128,14 @@ func cancelOne(ctx workflow.Context, spawned *[]childRun, id durable.SessionID) 
 		return
 	}
 	var exec workflow.Execution
-	if err := (*spawned)[i].fut.GetChildWorkflowExecution().Get(ctx, &exec); err == nil {
-		_ = workflow.RequestCancelExternalWorkflow(ctx, exec.ID, exec.RunID).Get(ctx, nil)
+	c := (*spawned)[i]
+	if c.child != nil {
+		if err := c.child.GetChildWorkflowExecution().Get(ctx, &exec); err == nil {
+			_ = workflow.RequestCancelExternalWorkflow(ctx, exec.ID, exec.RunID).Get(ctx, nil)
+		}
+	}
+	if c.cancel != nil {
+		c.cancel()
 	}
 	dropChild(spawned, id)
 }
@@ -99,13 +151,16 @@ func applyChildIntent(
 	if tout.CancelID != "" {
 		cancelOne(ctx, spawned, tout.CancelID)
 	}
-	if tout.SpawnID == "" || tout.SpawnSpec == "" || tout.SpawnTask == "" {
+	if tout.JobID == "" || tout.JobName == "" || findChild(*spawned, tout.JobID) >= 0 {
 		return nil
 	}
-	if findChild(*spawned, tout.SpawnID) >= 0 {
-		return nil
+	spec, worker := "", ""
+	if tout.Child {
+		spec = tout.JobName
+	} else {
+		worker = tout.JobName
 	}
-	c, err := startChild(ctx, sessionCtx, in.SessionID, agentID, tout.SpawnSpec, tout.SpawnTask, tout.SpawnID, mounts, in)
+	c, err := startChild(ctx, sessionCtx, in.SessionID, agentID, spec, worker, tout.JobTask, tout.JobID, mounts, in)
 	if err != nil {
 		return err
 	}
@@ -116,19 +171,16 @@ func applyChildIntent(
 func waitChildTool(
 	ctx workflow.Context,
 	spawned *[]childRun,
-	parks *map[string]durable.SessionID,
-	callID string,
 	id durable.SessionID,
 	cancelCh workflow.ReceiveChannel,
 	cancelSpawned func(),
-) (string, string, error) {
-	waitCh := workflow.GetSignalChannel(ctx, signalChildWaiting)
+) (string, error) {
 	for {
 		i := findChild(*spawned, id)
 		if i < 0 {
-			return "", "", durable.ErrSessionNotFound
+			return "", durable.ErrSessionNotFound
 		}
-		if (*spawned)[i].done || (*spawned)[i].waiting {
+		if (*spawned)[i].done {
 			break
 		}
 		cancelled := false
@@ -141,7 +193,6 @@ func waitChildTool(
 				return
 			}
 			(*spawned)[j].done = true
-			(*spawned)[j].waiting = false
 			(*spawned)[j].result = result
 			if err != nil {
 				(*spawned)[j].err = err.Error()
@@ -152,103 +203,97 @@ func waitChildTool(
 			cancelSpawned()
 			cancelled = true
 		})
-		s.AddReceive(waitCh, func(c workflow.ReceiveChannel, more bool) {
-			var w durable.SessionID
-			c.Receive(ctx, &w)
-			if j := findChild(*spawned, w); j >= 0 {
-				(*spawned)[j].waiting = true
-			}
-		})
 		s.Select(ctx)
 		if cancelled {
-			return "", "", workflow.ErrCanceled
+			return "", workflow.ErrCanceled
 		}
 	}
 	i := findChild(*spawned, id)
 	if i < 0 {
-		return "", "", durable.ErrSessionNotFound
+		return "", durable.ErrSessionNotFound
 	}
 	c := (*spawned)[i]
-	if c.waiting && !c.done {
-		if *parks == nil {
-			*parks = map[string]durable.SessionID{}
-		}
-		(*parks)[callID] = c.id
-		return "", callID, nil
-	}
 	dropChild(spawned, id)
 	if c.err != "" {
-		return c.err, "", nil
+		return c.err, nil
 	}
-	return c.result, "", nil
+	return c.result, nil
 }
 
-// activityChildren is the Tool-activity childHost. It records this call's
-// spawn/cancel/await; the workflow runs those on Runtime (ExecuteChildWorkflow).
+// activityChildren is the Tool-activity JobHost. It records this call's
+// schedule/cancel/wait; the workflow starts, cancels, or waits via Runtime.
 type activityChildren struct {
-	parent    durable.SessionID
-	agentID   string
-	catalog   durable.Catalog
-	known     []durable.SessionID
-	spawnID   durable.SessionID
-	spawnSpec string
-	spawnTask string
-	cancelID  durable.SessionID
-	awaitID   durable.SessionID
+	parent   durable.SessionID
+	agentID  string
+	catalog  durable.Catalog
+	jobs     map[string]durable.JobHandler
+	known    []durable.SessionID
+	jobID    durable.SessionID
+	jobName  string
+	jobTask  string
+	child    bool
+	cancelID durable.SessionID
+	awaitID  durable.SessionID
 }
 
-func (a *activityChildren) SpawnChild(_ context.Context, specialist, task, callID string) (string, error) {
-	specialist, task, err := adapter.NormalizeSpawn(specialist, task)
+func (a *activityChildren) Schedule(_ context.Context, job tacklr.JobRequest, callID string) (tacklr.Job, error) {
+	name, task, err := adapter.NormalizeSpawn(job.Name, job.Task)
 	if err != nil {
-		return "", err
+		return tacklr.Job{}, err
 	}
-	if a.catalog != nil {
-		if spec, ok := a.catalog.Lookup(a.agentID); ok {
-			if _, err := adapter.OverlaySpecialist(spec, specialist); err != nil {
-				return "", fmt.Errorf("%w: %w", tacklr.ErrNotFound, err)
-			}
+	session := adapter.HasSpecialist(a.catalog, a.agentID, name)
+	var id durable.SessionID
+	if session {
+		id = durable.ChildSessionID(a.parent, name, callID)
+	} else {
+		if _, ok := a.jobs[name]; !ok {
+			return tacklr.Job{}, fmt.Errorf("%w: %s", tacklr.ErrNotFound, name)
 		}
+		id = durable.JobID(a.parent, name, callID)
 	}
-	id := durable.ChildSessionID(a.parent, specialist, callID)
-	if slices.Contains(a.known, id) || a.spawnID == id {
-		return string(id), nil
+	if slices.Contains(a.known, id) || a.jobID == id {
+		return tacklr.Job{ID: string(id), Name: name, State: tacklr.JobRunning}, nil
 	}
 	if task == "" {
-		return "", fmt.Errorf("task_description_and_context is required: %w", tacklr.ErrInvalid)
+		if session {
+			return tacklr.Job{}, fmt.Errorf("task_description_and_context is required: %w", tacklr.ErrInvalid)
+		}
+		return tacklr.Job{}, fmt.Errorf("task is required: %w", tacklr.ErrInvalid)
 	}
-	a.spawnID = id
-	a.spawnSpec = specialist
-	a.spawnTask = task
-	return string(id), nil
+	a.jobID, a.jobName, a.jobTask, a.child = id, name, task, session
+	return tacklr.Job{ID: string(id), Name: name, State: tacklr.JobRunning}, nil
 }
 
-func (a *activityChildren) Children() []tacklr.Child {
-	out := make([]tacklr.Child, 0, len(a.known)+1)
+func (a *activityChildren) Jobs() []tacklr.Job {
+	out := make([]tacklr.Job, 0, len(a.known)+1)
 	seen := map[durable.SessionID]bool{}
 	for _, id := range a.known {
 		seen[id] = true
-		out = append(out, tacklr.Child{ID: string(id), State: tacklr.ChildRunning})
+		out = append(out, tacklr.Job{ID: string(id), State: tacklr.JobRunning})
 	}
-	if a.spawnID != "" && !seen[a.spawnID] {
-		out = append(out, tacklr.Child{ID: string(a.spawnID), Specialist: a.spawnSpec, State: tacklr.ChildRunning})
+	if a.jobID != "" && !seen[a.jobID] {
+		out = append(out, tacklr.Job{ID: string(a.jobID), Name: a.jobName, State: tacklr.JobRunning})
 	}
 	return out
 }
 
-func (a *activityChildren) CancelChild(_ context.Context, id string) error {
+func (a *activityChildren) CancelJob(_ context.Context, id string) error {
 	sid := durable.SessionID(id)
-	if sid != a.spawnID && !slices.Contains(a.known, sid) {
+	if sid != a.jobID && !slices.Contains(a.known, sid) {
 		return adapter.UnknownChild(id)
 	}
 	a.cancelID = sid
 	return nil
 }
 
-func (a *activityChildren) AwaitChild(_ context.Context, id, _ string) (tacklr.Child, error) {
-	sid := durable.SessionID(id)
-	if sid != a.spawnID && !slices.Contains(a.known, sid) {
-		return tacklr.Child{}, adapter.UnknownChild(id)
+func (a *activityChildren) RunSpecialist(_ context.Context, name, task, callID string) (string, error) {
+	if !adapter.HasSpecialist(a.catalog, a.agentID, name) {
+		return "", fmt.Errorf("%w: %s", tacklr.ErrNotFound, name)
 	}
-	a.awaitID = sid
-	return tacklr.Child{}, &interrupt.ChildWaiting{Kind: interrupt.TypeChildWaiting}
+	job, err := a.Schedule(context.Background(), tacklr.JobRequest{Name: name, Task: task}, callID)
+	if err != nil {
+		return "", err
+	}
+	a.awaitID = durable.SessionID(job.ID)
+	return "", &tacklr.JobWaitError{ID: job.ID}
 }

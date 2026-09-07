@@ -2,9 +2,9 @@ package inprocess
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -12,7 +12,6 @@ import (
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
 	adapter "github.com/ryanaldo34/tacklr/durable/internal"
-	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -42,52 +41,33 @@ func (r *Runtime) constructHarness(ctx context.Context, p *sessionProc, bindings
 		spec = over
 	}
 	threadID := string(p.id)
-	ms, skillsMS, err := adapter.OpenTurnSessions(ctx, threadID, spec, bindings, r.projection)
+	h, ms, skillsMS, err := adapter.ConstructTurn(ctx, spec, threadID, bindings, r.projection, p.mcp)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	opts := spec.Options
-	opts.SessionID = threadID
-	opts.MountSession = ms
-	opts.SkillsSession = skillsMS
-	opts.SkillsRoot = spec.SkillsRoot
-	if len(p.mcp) > 0 {
-		mcpConfigs := make([]mcp.MCPConfig, 0, len(spec.Options.MCPConfigs)+len(p.mcp))
-		mcpConfigs = append(mcpConfigs, spec.Options.MCPConfigs...)
-		mcpConfigs = append(mcpConfigs, p.mcp...)
-		opts.MCPConfigs = mcpConfigs
-	}
-
-	h, err := tacklr.NewTurnManager(ctx, opts)
+	h.BindJobHost(sessionJobs{r: r, p: p})
+	rev, err := adapter.RestoreTurn(ctx, r.snapshots, p.id, h, state)
 	if err != nil {
-		adapter.CloseTurnTrees(ms, skillsMS, threadID, "construct")
+		adapter.AbandonTurn(h, ms, skillsMS)
 		return nil, nil, nil, err
 	}
-	h.BindChildHost(sessionChildren{r: r, p: p})
-	snap, rev, loadErr := r.snapshots.Load(ctx, p.id)
-	switch {
-	case loadErr == nil:
+	if rev != "" {
 		p.revision = rev
-		if err := h.RestoreCheckpoint(snap.Checkpoint); err != nil {
-			h.Close()
-			adapter.CloseTurnTrees(ms, skillsMS, threadID, "restore")
-			return nil, nil, nil, err
-		}
-	case errors.Is(loadErr, durable.ErrSessionNotFound):
-	default:
-		h.Close()
-		adapter.CloseTurnTrees(ms, skillsMS, threadID, "load")
-		return nil, nil, nil, loadErr
-	}
-	if err := h.ApplySessionState(state); err != nil {
-		h.Close()
-		adapter.CloseTurnTrees(ms, skillsMS, threadID, "state")
-		return nil, nil, nil, err
 	}
 	return h, ms, skillsMS, nil
 }
 
 func (r *Runtime) persistHarness(ctx context.Context, p *sessionProc, h *tacklr.TurnManager) error {
+	p.mu.Lock()
+	overlay := p.state
+	stateGen := p.stateGen
+	mounts := slices.Clone(p.mounts)
+	p.mu.Unlock()
+	if len(overlay) > 0 {
+		if err := h.ApplySessionState(maps.Clone(overlay)); err != nil {
+			return err
+		}
+	}
 	cp, err := h.Checkpoint()
 	if err != nil {
 		telemetry.RecordCheckpointAttempt(ctx, err)
@@ -97,14 +77,17 @@ func (r *Runtime) persistHarness(ctx context.Context, p *sessionProc, h *tacklr.
 	children := slices.Clone(p.children)
 	parent := p.parent
 	specialist := p.specialist
+	worker := p.worker
+	agentID := p.agentID
 	p.mu.Unlock()
 	rev, err := r.snapshots.Save(ctx, p.id, durable.Snapshot{
-		AgentID:    p.agentID,
+		AgentID:    agentID,
 		Specialist: specialist,
+		Worker:     worker,
 		Parent:     parent,
 		Children:   children,
 		Checkpoint: *cp,
-		Mounts:     p.mounts,
+		Mounts:     mounts,
 	}, p.revision)
 	telemetry.RecordCheckpointAttempt(ctx, err)
 	if err != nil {
@@ -112,7 +95,9 @@ func (r *Runtime) persistHarness(ctx context.Context, p *sessionProc, h *tacklr.
 	}
 	p.revision = rev
 	p.mu.Lock()
-	p.state = nil
+	if p.stateGen == stateGen {
+		p.state = nil
+	}
 	p.mu.Unlock()
 	return nil
 }
@@ -146,13 +131,19 @@ func (r *Runtime) fail(ctx context.Context, p *sessionProc, err error) turnOutco
 }
 
 func (r *Runtime) runTurn(ctx context.Context, p *sessionProc, user *tacklr.Message, resume map[string][]byte, bindings []vfs.Binding, state map[string]any) turnOutcome {
+	p.mu.Lock()
+	worker := p.worker
+	p.mu.Unlock()
+	if worker != "" {
+		return r.runWorkerTurn(ctx, p, user)
+	}
 	h, ms, skillsMS, err := r.constructHarness(ctx, p, bindings, state)
 	if err != nil {
 		return r.fail(ctx, p, err)
 	}
 	defer func() {
 		h.Close()
-		adapter.CloseTurnTrees(ms, skillsMS, string(p.id), "turn_end")
+		adapter.CloseTurnTrees(ms, skillsMS)
 	}()
 
 	eng := h.Drive()
@@ -206,12 +197,24 @@ func (r *Runtime) runTurn(ctx context.Context, p *sessionProc, user *tacklr.Mess
 		if err := eng.ApplyResume(resume); err != nil {
 			return r.fail(ctx, p, err)
 		}
-	} else if user != nil {
-		if err := eng.AbsorbUser(ctx, user, out); err != nil {
+	} else {
+		if n, _, err := r.drainInbox(ctx, p, eng, out); err != nil {
 			if ctx.Err() != nil {
 				return cancelled()
 			}
 			return r.fail(ctx, p, err)
+		} else if n > 0 {
+			if err := r.persistHarness(ctx, p, h); err != nil {
+				return r.fail(ctx, p, err)
+			}
+		}
+		if user != nil {
+			if err := eng.AbsorbUser(ctx, user, out); err != nil {
+				if ctx.Err() != nil {
+					return cancelled()
+				}
+				return r.fail(ctx, p, err)
+			}
 		}
 	}
 
@@ -223,11 +226,24 @@ func (r *Runtime) runTurn(ctx context.Context, p *sessionProc, user *tacklr.Mess
 		if ctx.Err() != nil {
 			return cancelled()
 		}
-		nudge := ""
-		if len(toolCalls) == 0 && !parked && inferComplete {
-			nudge = adapter.ChildrenNudge(r.childStatuses(p))
+		jobsRemain := false
+		if adapter.InboxSafe(len(toolCalls), parked) {
+			n, live, err := r.drainInbox(ctx, p, eng, out)
+			if err != nil {
+				if ctx.Err() != nil {
+					return cancelled()
+				}
+				return r.fail(ctx, p, err)
+			}
+			jobsRemain = live > 0
+			if n > 0 {
+				inferComplete = false
+				if err := r.persistHarness(ctx, p, h); err != nil {
+					return r.fail(ctx, p, err)
+				}
+			}
 		}
-		switch tacklr.Next(len(toolCalls), parked, inferComplete, nudge != "") {
+		switch tacklr.Next(len(toolCalls), parked, inferComplete, jobsRemain) {
 		case tacklr.ActionInfer:
 			step, infErr := eng.RunInference(ctx, st, out)
 			if ctx.Err() != nil {
@@ -279,29 +295,93 @@ func (r *Runtime) runTurn(ctx context.Context, p *sessionProc, user *tacklr.Mess
 				return r.fail(ctx, p, err)
 			}
 			return r.commitTurn(ctx, p, turnComplete, &tacklr.StreamEvent{Type: tacklr.StreamEventComplete})
-		case tacklr.ActionNudge:
-			if err := eng.AbsorbUser(ctx, &tacklr.Message{Role: tacklr.RoleUser, Content: nudge}, out); err != nil {
+		case tacklr.ActionWait:
+			if err := r.waitJobs(ctx, p); err != nil {
+				if ctx.Err() != nil {
+					return cancelled()
+				}
 				return r.fail(ctx, p, err)
 			}
-			st.HadToolRound = true
-			inferComplete = false
 		}
 	}
 }
 
-func (r *Runtime) captureResult(p *sessionProc, h *tacklr.TurnManager) {
-	var result string
-	for _, m := range h.Drive().Messages() {
-		if m != nil && m.Role == tacklr.RoleAssistant && m.Content != "" {
-			result = m.Content
-		}
+func (r *Runtime) runWorkerTurn(ctx context.Context, p *sessionProc, user *tacklr.Message) turnOutcome {
+	p.mu.Lock()
+	name := p.worker
+	p.mu.Unlock()
+	fn, ok := r.jobs[name]
+	if !ok {
+		return r.fail(ctx, p, fmt.Errorf("%w: %s", tacklr.ErrNotFound, name))
 	}
-	if result == "" {
-		return
+	if err := r.persistWorker(ctx, p); err != nil {
+		return r.fail(ctx, p, err)
+	}
+	task := ""
+	if user != nil {
+		task = user.Content
+	}
+	res, err := fn(ctx, task)
+	if err := ctx.Err(); err != nil {
+		p.mu.Lock()
+		p.termErr = err
+		p.mu.Unlock()
+		_ = r.persistWorker(context.WithoutCancel(ctx), p)
+		return r.commitTurn(context.WithoutCancel(ctx), p, turnCancelled, &tacklr.StreamEvent{Type: tacklr.StreamEventError, Error: err})
+	}
+	if err != nil {
+		p.mu.Lock()
+		p.termErr = err
+		if res == "" {
+			p.result = err.Error()
+		} else {
+			p.result = res
+		}
+		p.mu.Unlock()
+		if perr := r.persistWorker(ctx, p); perr != nil {
+			err = fmt.Errorf("%w: persist: %w", err, perr)
+		}
+		return r.fail(ctx, p, err)
 	}
 	p.mu.Lock()
-	p.result = result
+	p.result = res
 	p.mu.Unlock()
+	if err := r.persistWorker(ctx, p); err != nil {
+		return r.fail(ctx, p, err)
+	}
+	return r.commitTurn(ctx, p, turnComplete, &tacklr.StreamEvent{Type: tacklr.StreamEventComplete})
+}
+
+func (r *Runtime) persistWorker(ctx context.Context, p *sessionProc) error {
+	p.mu.Lock()
+	snap := durable.Snapshot{
+		AgentID:    p.agentID,
+		Parent:     p.parent,
+		Specialist: p.specialist,
+		Worker:     p.worker,
+		Mounts:     slices.Clone(p.mounts),
+	}
+	rev := p.revision
+	p.mu.Unlock()
+	nrev, err := r.snapshots.Save(ctx, p.id, snap, rev)
+	if err != nil {
+		return err
+	}
+	p.revision = nrev
+	return nil
+}
+
+func (r *Runtime) captureResult(p *sessionProc, h *tacklr.TurnManager) {
+	msgs := h.Drive().Messages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m != nil && m.Role == tacklr.RoleAssistant && m.Content != "" {
+			p.mu.Lock()
+			p.result = m.Content
+			p.mu.Unlock()
+			return
+		}
+	}
 }
 
 func (r *Runtime) recordTurn(ctx context.Context, agentID, threadID, kind string, promptLen, resumeCount int) (context.Context, func(turnOutcome)) {

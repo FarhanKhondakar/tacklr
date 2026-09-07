@@ -35,8 +35,8 @@ type TurnManager struct {
 	// pendingToolCalls is keyed by tool call id, which is also the wire interrupt id.
 	pendingToolCalls map[string]PendingToolCall
 	pendingMu        sync.Mutex
-	// childHost, when set, is nested Runtime sessions. Nil: child methods fail.
-	childHost    ChildHost
+	// jobHost, when set, is nested sessions and named workers. Nil: job methods fail.
+	jobHost      JobHost
 	skillByName  map[string]skills.Skill
 	skillsLoader skills.SkillLoader
 	// hostInterceptors and hostResultHooks are the host-supplied session
@@ -63,10 +63,10 @@ type TurnManager struct {
 	runMu sync.Mutex
 }
 
-// BindChildHost installs nested-session operations. Durable runtimes call this
-// after NewTurnManager. Nil: child methods fail.
-func (a *TurnManager) BindChildHost(host ChildHost) {
-	a.childHost = host
+// BindJobHost installs job operations. Durable runtimes call this after
+// NewTurnManager. Nil: job methods fail.
+func (a *TurnManager) BindJobHost(host JobHost) {
+	a.jobHost = host
 }
 
 func (a *TurnManager) pendingSnapshot() map[string]PendingToolCall {
@@ -222,11 +222,10 @@ When solving a task:
 AVAILABLE SPECIALISTS:
 You can delegate tasks to specialists using spawn_specialist. Each specialist has its own instructions, tools, and model — choose the one best suited to the task. Spawn a specialist when several subtasks can run in parallel, or when a task needs significant research or analysis and you only need the final output. Prefer a smaller plan over many specialists.
 
-spawn_specialist block defaults to true and waits for the result. Set block=false to start a child session and continue other work. Tool roles:
-- list_children: status of child sessions (running until complete, failed, or cancelled — including while waiting for user input).
-- get_child: status or result by default; block=true waits, and if the child needs user input this call parks until Resume.
-- cancel_child: stop a child that is no longer needed.
-The turn cannot finish while child sessions remain. Collect each result with get_child, or cancel_child when the work is not needed.
+spawn_specialist block defaults to true and runs the specialist in line (this tool returns its result). Set block=false to start a job and continue other work; the result arrives as a later message. Tool roles:
+- list_children: status of jobs (running until complete, failed, or cancelled).
+- cancel_child: stop a job that is no longer needed.
+The turn stays open while jobs remain. Finished jobs arrive as messages. Use cancel_child when the work is not needed.
 
 %s`, builtIn, subList)
 	}
@@ -280,7 +279,7 @@ func (a *TurnManager) findTool(name, namespace string) *Tool {
 }
 
 // CancelledToolResultContent is written into the context window for tool calls
-// aborted by session cancel or mid-turn steer (user interrupt).
+// aborted by session cancel.
 const CancelledToolResultContent = "cancelled: user interrupted the agent"
 
 // streamChunk maps a model chunk to a harness StreamEvent.
@@ -326,7 +325,7 @@ func (a *TurnManager) withToolPresentation(tc ToolCall) ToolCall {
 
 // toolOutputIDs returns RoleTool call ids present in the window.
 func toolOutputIDs(window []*Message) map[string]struct{} {
-	hasOutput := make(map[string]struct{})
+	hasOutput := make(map[string]struct{}, len(window))
 	for _, m := range window {
 		if m != nil && m.Role == RoleTool && m.ToolCallID != "" {
 			hasOutput[m.ToolCallID] = struct{}{}
@@ -376,19 +375,10 @@ func (a *TurnManager) emitPlanUpdate(out chan<- StreamEvent) {
 	out <- StreamEvent{Type: StreamEventPlanUpdate, Data: data}
 }
 
-func (a *TurnManager) hasOpenToolWork() bool {
-	a.pendingMu.Lock()
-	nPending := len(a.pendingToolCalls)
-	a.pendingMu.Unlock()
-	if nPending > 0 || a.session.HasPendingInterrupt() {
-		return true
-	}
-	return len(a.openToolCalls()) > 0
-}
-
 // openToolCalls returns assistant/pending tool_calls that have no RoleTool result yet.
 func (a *TurnManager) openToolCalls() []ToolCall {
-	hasOutput := toolOutputIDs(a.context.Messages())
+	window := a.context.Messages()
+	hasOutput := toolOutputIDs(window)
 	seen := make(map[string]struct{})
 	var open []ToolCall
 	add := func(tc ToolCall) {
@@ -405,7 +395,7 @@ func (a *TurnManager) openToolCalls() []ToolCall {
 		seen[id] = struct{}{}
 		open = append(open, tc)
 	}
-	for _, m := range a.context.Messages() {
+	for _, m := range window {
 		if m == nil || m.Role != RoleAssistant {
 			continue
 		}
@@ -421,26 +411,6 @@ func (a *TurnManager) openToolCalls() []ToolCall {
 	}
 	a.pendingMu.Unlock()
 	return open
-}
-
-// pairCancelledToolResults pairs cancelled results for open tools into the window.
-// When out is non-nil, also streams tool_result events (live turn cancel path).
-func (a *TurnManager) pairCancelledToolResults(out chan<- StreamEvent) {
-	for _, tc := range a.openToolCalls() {
-		if out != nil {
-			a.context.Add(a.emitToolResult(out, tc, CancelledToolResultContent, "error"))
-			continue
-		}
-		msg, _ := a.toolResultMessage(tc, CancelledToolResultContent, "error")
-		a.context.Add(msg)
-	}
-}
-
-func (a *TurnManager) clearInterruptParkState() {
-	a.pendingMu.Lock()
-	a.pendingToolCalls = make(map[string]PendingToolCall)
-	a.pendingMu.Unlock()
-	a.session.ClearInterrupts()
 }
 
 // discoverAllTools is the MCP discovery entry. Tests may replace it.

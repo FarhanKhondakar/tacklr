@@ -18,11 +18,17 @@ func (a *TurnManager) absorbUser(ctx context.Context, user *Message, out chan St
 			return fmt.Errorf("unsupported content type(s): %s", strings.Join(bad, ", "))
 		}
 	}
-	a.pairOpenToolCalls("unpaired tool call")
-	if a.hasOpenToolWork() {
-		a.pairCancelledToolResults(nil)
-		a.clearInterruptParkState()
+	if open := a.openToolCalls(); len(open) > 0 || a.session.HasPendingInterrupt() {
+		for _, tc := range open {
+			msg, _ := a.toolResultMessage(tc, CancelledToolResultContent, "error")
+			a.context.Add(msg)
+		}
+		a.pendingMu.Lock()
+		clear(a.pendingToolCalls)
+		a.pendingMu.Unlock()
+		a.session.ClearInterrupts()
 	}
+	a.pairOpenToolCalls("unpaired tool call")
 	return a.addToContext(ctx, user, out)
 }
 
@@ -30,7 +36,7 @@ func (a *TurnManager) runnableToolCalls() []ToolCall {
 	pending := a.pendingSnapshot()
 	out := make([]ToolCall, 0, len(pending))
 	for _, p := range pending {
-		if !p.InterruptActive && p.ToolCall != nil {
+		if !p.InterruptActive && !p.AwaitJob && p.ToolCall != nil {
 			out = append(out, *p.ToolCall)
 		}
 	}
@@ -148,7 +154,7 @@ func (a *TurnManager) runInference(ctx context.Context, st *TurnState, out chan 
 }
 
 func (a *TurnManager) runToolCall(ctx context.Context, tc ToolCall, out chan StreamEvent) (ToolStep, error) {
-	turnRT := newToolRuntime(out, a.session, a.childHost)
+	turnRT := newToolRuntime(out, a.session, a.jobHost)
 	tcKey := tc.Key()
 	toolCtx, toolSpan := telemetry.StartToolSpan(ctx, tc.Name, tc.Namespace)
 	tool := a.findTool(tc.Name, tc.Namespace)
@@ -171,6 +177,18 @@ func (a *TurnManager) runToolCall(ctx context.Context, tc ToolCall, out chan Str
 	var parked interrupt.Interrupt
 	if err != nil && !errors.As(err, &parked) && (errors.Is(err, ErrAuthExpired) || errors.Is(err, vfs.ErrAuthExpired)) {
 		err = a.session.Park(tcKey, &interrupt.AuthExpired{Tool: tc.Name})
+	}
+	var waitJob *JobWaitError
+	if errors.As(err, &waitJob) {
+		a.pendingMu.Lock()
+		a.pendingToolCalls[tcKey] = PendingToolCall{ToolCall: &tc, AwaitJob: true}
+		a.pendingMu.Unlock()
+		toolSpan.Finish("success", nil)
+		id := ""
+		if waitJob != nil {
+			id = waitJob.ID
+		}
+		return ToolStep{AwaitJobID: id}, nil
 	}
 	if errors.As(err, &parked) {
 		serialized, _ := parked.Serialize()
@@ -222,13 +240,12 @@ func (a *TurnManager) runToolCall(ctx context.Context, tc ToolCall, out chan Str
 	return ToolStep{}, nil
 }
 
-// SpawnSpecialistName is the built-in that calls HarnessRuntime.SpawnChild.
+// SpawnSpecialistName is the built-in that calls HarnessRuntime.Schedule.
 const SpawnSpecialistName = "spawn_specialist"
 
-// ListChildrenName, GetChildName, and CancelChildName are built-ins on HarnessRuntime.Children / AwaitChild / CancelChild.
+// ListChildrenName and CancelChildName are built-ins on HarnessRuntime.Jobs / CancelJob.
 const (
 	ListChildrenName = "list_children"
-	GetChildName     = "get_child"
 	CancelChildName  = "cancel_child"
 )
 
@@ -257,9 +274,10 @@ func (a *TurnManager) applyResume(finishedInterrupts map[string][]byte) error {
 // Key()-keyed phantom (fc_ item id) is rejected by Azure as
 // "No tool call found for function call output".
 func (a *TurnManager) pairOpenToolCalls(reason string) {
-	hasOutput := toolOutputIDs(a.context.Messages())
+	window := a.context.Messages()
+	hasOutput := toolOutputIDs(window)
 	pending := a.pendingSnapshot()
-	for _, m := range a.context.Messages() {
+	for _, m := range window {
 		if m == nil || m.Role != RoleAssistant {
 			continue
 		}
