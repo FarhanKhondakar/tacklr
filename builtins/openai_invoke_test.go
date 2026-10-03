@@ -553,6 +553,51 @@ func TestInvoke_promptCacheGPT56BreakpointsAndToolChoiceNone(t *testing.T) {
 	}
 }
 
+func TestInvoke_nonGPT56ModelGetsNoGPT56CacheOptions(t *testing.T) {
+	var saw map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &saw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":1}}}`,
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	// OpenRouter validates prompt_cache_options.mode and rejects "implicit", so
+	// non-GPT-5.6 models must not receive GPT-5.6-only cache fields.
+	s := NewOpenAIInferenceStrategy(srv.Client()).
+		WithApiKey("k").
+		WithModel("poolside/laguna-xs-2.1").
+		WithURL(srv.URL)
+	s.CacheKey = "sess-openrouter-1"
+
+	ch, err := s.Invoke(context.Background(), []*tacklr.Message{
+		{Role: tacklr.RoleUser, Content: "ask"},
+	}, nil, "stable system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for c := range ch {
+		if c.Type == tacklr.StreamEventError {
+			t.Fatalf("stream: %s", c.Content)
+		}
+	}
+	if _, ok := saw["prompt_cache_options"]; ok {
+		t.Fatalf("non-GPT-5.6 must not receive prompt_cache_options: %v", saw["prompt_cache_options"])
+	}
+	if saw["prompt_cache_key"] != "sess-openrouter-1" {
+		t.Fatalf("prompt_cache_key = %v", saw["prompt_cache_key"])
+	}
+	inRaw, _ := json.Marshal(saw["input"])
+	if strings.Contains(string(inRaw), "prompt_cache_breakpoint") {
+		t.Fatalf("non-GPT-5.6 must not receive breakpoints: %s", inRaw)
+	}
+}
+
 func TestPromptCache_grokAndGPTShapes(t *testing.T) {
 	grok := newPromptCache("grok-4.6", "https://api.x.ai/v1", "")
 	if grok.breakpoints() {

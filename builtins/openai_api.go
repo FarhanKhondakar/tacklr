@@ -184,8 +184,20 @@ func newPromptCache(model, baseURL, key string) promptCache {
 	if strings.Contains(strings.ToLower(baseURL), "x.ai") || strings.HasPrefix(strings.ToLower(model), "grok") {
 		return grokCache{key: key}
 	}
-	return gptCache{key: key}
+	// prompt_cache_options and content-block breakpoints are GPT-5.6+ policy;
+	// other models only get the cache key. Gateways like OpenRouter validate
+	// the options shape and reject "implicit", so sending them is a 400.
+	if strings.Contains(strings.ToLower(model), "gpt-5.6") {
+		return gptCache{key: key}
+	}
+	return plainCache{key: key}
 }
+
+type plainCache struct{ key string }
+
+func (c plainCache) apply(req *responsesRequest) { req.PromptCacheKey = c.key }
+func (plainCache) headers(http.Header)           {}
+func (plainCache) breakpoints() bool             { return false }
 
 type grokCache struct{ key string }
 
