@@ -587,7 +587,8 @@ const (
 )
 
 // ToolOutcome is the single post-tool result: model-visible output plus a
-// window effect. Plan builtins return this. Host hooks leave Output empty.
+// window effect. Plan builtins return this. A host ToolResultHook may also set
+// Output to replace the model-visible result, for example to cap a large one.
 type ToolOutcome struct {
 	Output string
 	// Effect is merged for the batch and applied once at batch end.
@@ -608,6 +609,15 @@ type ToolResultObservation struct {
 // ToolResultHook runs after a successful host tool and before the tool result is emitted.
 // Effects apply at batch end. Plan builtins return ToolOutcome instead.
 type ToolResultHook func(ctx context.Context, obs ToolResultObservation) ToolOutcome
+
+// hookOutput returns the model-visible tool output, preferring a replacement a
+// host ToolResultHook provides in ToolOutcome.Output.
+func hookOutput(output string, disp ToolOutcome) string {
+	if disp.Output != "" {
+		return disp.Output
+	}
+	return output
+}
 
 type toolResultHookRegistry struct {
 	byName map[string]ToolResultHook
