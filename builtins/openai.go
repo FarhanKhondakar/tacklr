@@ -34,6 +34,9 @@ type OpenAIInferenceStrategy struct {
 	baseURL          string
 	// localTokenFallback uses tiktoken when the provider has no input_tokens endpoint.
 	localTokenFallback bool
+	// promptCacheFor overrides cache-profile resolution when non-nil.
+	// NewOpenRouterInferenceStrategy pins OpenRouter's key-only profile here.
+	promptCacheFor func(model, baseURL, key string) promptCache
 }
 
 var (
@@ -52,6 +55,15 @@ func (s *OpenAIInferenceStrategy) SetSystemPrompt(prompt string) {
 // SetPromptCacheKey is the harness hook (tacklr cannot import this package).
 func (s *OpenAIInferenceStrategy) SetPromptCacheKey(key string) {
 	s.CacheKey = strings.TrimSpace(key)
+}
+
+// promptCache resolves the cache profile for this strategy's model and endpoint.
+// The default is per-provider resolution; a strategy may pin its own profile.
+func (s *OpenAIInferenceStrategy) promptCache() promptCache {
+	if s.promptCacheFor != nil {
+		return s.promptCacheFor(s.model, s.baseURL, s.CacheKey)
+	}
+	return newPromptCache(s.model, s.baseURL, s.CacheKey)
 }
 
 func NewOpenAIInferenceStrategy(client *http.Client) *OpenAIInferenceStrategy {
@@ -145,7 +157,7 @@ func (s *OpenAIInferenceStrategy) CountTokens(ctx context.Context, messages []*t
 		return 0, tacklr.ErrModelNotSet
 	}
 
-	cache := newPromptCache(s.model, s.baseURL, s.CacheKey)
+	cache := s.promptCache()
 	items := marshalMessagesToInput(messages, s.instructions, cache.breakpoints())
 	inputJSON, err := json.Marshal(items)
 	if err != nil {
@@ -225,7 +237,7 @@ func (s *OpenAIInferenceStrategy) Invoke(ctx context.Context, messages []*tacklr
 	if prompt == "" {
 		prompt = s.instructions
 	}
-	cache := newPromptCache(s.model, s.baseURL, s.CacheKey)
+	cache := s.promptCache()
 	items := marshalMessagesToInput(messages, prompt, cache.breakpoints())
 
 	var toolsJSON json.RawMessage
