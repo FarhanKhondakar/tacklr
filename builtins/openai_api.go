@@ -158,6 +158,17 @@ type responsesRequest struct {
 	// Include asks the provider for extra output fields. reasoning.encrypted_content
 	// is required to replay reasoning items statelessly (OpenAI ZDR / Azure store=false).
 	Include []string `json:"include,omitempty"`
+	// Provider pins OpenRouter routing; nil keeps OpenRouter's default and the
+	// field never appears for OpenAI-compatible endpoints that reject it.
+	Provider *providerRouting `json:"provider,omitempty"`
+}
+
+// providerRouting is OpenRouter's provider preference block. Only is a
+// provider-slug allowlist (e.g. ["novita"]); AllowFallbacks is a pointer so
+// an explicit false survives omitempty and reaches the wire.
+type providerRouting struct {
+	Only           []string `json:"only,omitempty"`
+	AllowFallbacks *bool    `json:"allow_fallbacks,omitempty"`
 }
 
 // promptCacheOptions is GPT-5.6+ Responses cache policy. Not sent to xAI

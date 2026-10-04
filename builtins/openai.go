@@ -37,6 +37,9 @@ type OpenAIInferenceStrategy struct {
 	// promptCacheFor overrides cache-profile resolution when non-nil.
 	// NewOpenRouterInferenceStrategy pins OpenRouter's key-only profile here.
 	promptCacheFor func(model, baseURL, key string) promptCache
+	// provider pins OpenRouter routing when non-nil. Nil (and every non-
+	// OpenRouter host) omits the field entirely.
+	provider *providerRouting
 }
 
 var (
@@ -118,6 +121,18 @@ func (s *OpenAIInferenceStrategy) WithReasoningLevel(level string) *OpenAIInfere
 // ("auto", "concise", "detailed"). Empty clears it.
 func (s *OpenAIInferenceStrategy) WithReasoningSummary(summary string) *OpenAIInferenceStrategy {
 	s.reasoningSummary = summary
+	return s
+}
+
+// WithProviderRouting pins OpenRouter provider routing: only the given provider
+// slugs may serve this model, and allowFallbacks=false denies fallback
+// backends. Empty only clears the pin. Non-OpenRouter endpoints never see it.
+func (s *OpenAIInferenceStrategy) WithProviderRouting(only []string, allowFallbacks bool) *OpenAIInferenceStrategy {
+	if len(only) == 0 {
+		s.provider = nil
+		return s
+	}
+	s.provider = &providerRouting{Only: only, AllowFallbacks: &allowFallbacks}
 	return s
 }
 
@@ -268,6 +283,10 @@ func (s *OpenAIInferenceStrategy) Invoke(ctx context.Context, messages []*tacklr
 			Effort:  s.reasoning,
 			Summary: s.reasoningSummary,
 		}
+	}
+
+	if s.provider != nil {
+		reqBody.Provider = s.provider
 	}
 
 	body, err := json.Marshal(reqBody)
