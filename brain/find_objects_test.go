@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -197,5 +198,69 @@ func TestFindObjects_multiTurnMemoryGraph(t *testing.T) {
 	}
 	if _, err := engNo.FindObjects(ctx, scope, brain.FindObjectsRequest{Query: "x"}, sc); err == nil || !strings.Contains(err.Error(), "not available") {
 		t.Fatalf("want unavailable: %v", err)
+	}
+}
+
+// Graph text hits carry no write time. Decay must read updated_at from the store
+// before fusion, or the older title match stays ahead of the fresher body match.
+func TestFindObjects_optInDecayUsesStoreTime(t *testing.T) {
+	ctx := context.Background()
+	store := brain.NewMemoryStore()
+	g := brain.NewMemoryGraph()
+	ns := mustNS(t, "id", uuid.NewString())
+	oldT := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newT := oldT.Add(90 * 24 * time.Hour)
+	lam := 0.02
+	emb := []float32{1, 0, 0}
+	eng, err := brain.NewEngine(store, brain.WithGraph(g), brain.WithEmbedder(stubEmbedder{v: emb}), brain.WithConfig(brain.EngineConfig{
+		Lambda: &lam,
+		Now:    func() time.Time { return newT },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID, newID := uuid.New(), uuid.New()
+	if err := store.Put(ctx, brain.Object{ID: oldID, Kind: "Fact", Title: "policy", Namespace: ns, UpdatedAt: oldT}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.EnsureObject(ctx, brain.Object{ID: oldID, Kind: "Fact", Title: "policy", Namespace: ns, Embedding: emb}, "policy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, brain.Object{
+		ID: newID, Kind: "Fact", Title: "note", Content: "policy detail", Namespace: ns, UpdatedAt: newT,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.EnsureObject(ctx, brain.Object{ID: newID, Kind: "Fact", Title: "note", Namespace: ns, Embedding: emb}, "policy detail"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := eng.FindObjects(ctx, brain.Scope{Namespace: ns}, brain.FindObjectsRequest{Query: "policy"}, brain.NewSearchContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Objects) == 0 || page.Objects[0].ID != newID {
+		t.Fatalf("fresh fact should lead: %+v", page.Objects)
+	}
+}
+
+func TestFindObjects_decayStoreError(t *testing.T) {
+	ctx := context.Background()
+	id := uuid.New()
+	ns := mustNS(t, "id", uuid.NewString())
+	g := brain.NewMemoryGraph()
+	if err := g.EnsureObject(ctx, brain.Object{ID: id, Kind: "Fact", Title: "policy", Namespace: ns}, "policy"); err != nil {
+		t.Fatal(err)
+	}
+	lam := 0.02
+	eng, err := brain.NewEngine(&errAfterGetStore{ok: brain.NewMemoryStore(), failID: id},
+		brain.WithGraph(g), brain.WithLexicalOnly(),
+		brain.WithConfig(brain.EngineConfig{Lambda: &lam}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = eng.FindObjects(ctx, brain.Scope{Namespace: ns}, brain.FindObjectsRequest{Query: "policy"}, brain.NewSearchContext())
+	if err == nil || !strings.Contains(err.Error(), "hydrate objects") {
+		t.Fatalf("got %v", err)
 	}
 }

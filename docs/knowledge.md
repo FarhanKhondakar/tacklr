@@ -503,18 +503,20 @@ sequenceDiagram
     else embedder fails and degrade is allowed
         Note over E: lexical-only
     end
-    E->>E: Reciprocal Rank Fusion
+    E->>E: when λ > 0, decay each channel
+    E->>E: Reciprocal Rank Fusion, sum of 1/(k+r)
     E->>E: keep ids in scope_ids if set
-    E->>E: temporal decay by updated_at
-    E->>E: promote parts → parents + evidence
-    E->>S: load parent rows
-    E->>E: optional host reranker
+    E->>E: promote parts to parents plus evidence quotes
+    E->>E: optional host reranker, up to CandidateK parents
+    E->>S: load the page
     E-->>T: page of parents + result_set_id
 ```
 
 Production defaults (overridable on the engine, not per tool call): 40
-candidates per channel, RRF `k=60`, mild time decay `λ=0.02`, 3 evidence
-chunks, page size 10 (max 50).
+candidates per channel, RRF `k=60`, no age decay (`λ=0`), 3 evidence
+quotes of 240 characters, page size 10 (max 50). A host sets `Lambda`
+above 0 when a newer write should outrank an older one. `updated_at` is
+the last write, not an expiry. Equal scores still prefer the newer row.
 
 Indexed file recall is the same pipeline via `search` (prefer hits with
 `vfs_path`). That is not a behavior-preserving stand-in for live `rg`.
@@ -731,8 +733,8 @@ Factory mount params (`Profile: "brain"`):
 | `kind` | Required for `roots` — one kind per mount |
 | `kinds` | Comma allow-list. Empty catalog: pass this, or listing shows only kinds that already have objects |
 
-Optional knobs: `WithReranker` (post-hydrate product scoring),
-`WithExpandRecipes` (named expand templates), `WithConfig` (candidate *k*, decay, limits).
+Optional knobs: `WithReranker` (reorders up to `CandidateK` parents before the page cut),
+`WithExpandRecipes` (named expand templates), `WithConfig` (`CandidateK`, `RRFk`, `Lambda`, `EvidenceN`, `SnippetCap`, `DefaultLimit`, `MaxLimit`).
 
 Integration tests that need real backends use Testcontainers (Postgres image
 under `brain/testdata`, Helix `enterprise-dev`). They skip when Docker is
@@ -746,7 +748,7 @@ files.
 | Situation | Behavior |
 |-----------|----------|
 | Wrong namespace | `Get` / search look like not found. Graph ids that fail hydrate are dropped. A coarser scope (fewer attrs) sees objects with extra attrs. |
-| Soft-deleted object | Hidden from Get and search. Graph node is already gone. |
+| Soft-deleted object | Hidden from Get, search, find_exact, and find_objects. Deleting an engram file or calling `unindex` is this delete. There is no separate expired flag. A row stays in search until that delete, or until a property filter excludes it. |
 | No embedder at construct | `NewEngine` fails unless you pass `WithEmbedder` or `WithLexicalOnly`. |
 | Embedder down at **query** time | `search` / `find_objects` can run lexical-only (default). Set `FailOnEmbedderError` to surface the error. |
 | Embedder down at **Put** time | **Fail closed.** An unindexed parent is not persisted. |

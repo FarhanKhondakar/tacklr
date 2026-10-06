@@ -13,17 +13,12 @@ import (
 const defaultRRFk = 60
 
 // FuseRanks merges best-first lists with reciprocal rank fusion.
-// k <= 0 selects the default fusion constant. Channel scores are ignored.
+// k == 0 selects the default fusion constant. Channel scores are ignored.
+// The score of an id is the sum, over every list that contains it, of 1/(k+r),
+// where r is the 1-based position in that list (Cormack, Clarke, Buettcher 2009).
+// Loop rank is 0-based, so the term is written 1/(k+rank+1).
 func FuseRanks(lists [][]ScoredID, k int) []ScoredID {
-	return rrfFuse(lists, k)
-}
-
-// rrfFuse merges ranked lists with Reciprocal Rank Fusion.
-// Each input list must already be ordered best-first. Channel scores are ignored.
-func rrfFuse(lists [][]ScoredID, k int) []ScoredID {
-	if k <= 0 {
-		k = defaultRRFk
-	}
+	k = cmp.Or(k, defaultRRFk)
 	type acc struct {
 		rrf        float64
 		UpdatedAt  time.Time
@@ -127,4 +122,21 @@ func cmpUUID(a, b uuid.UUID) int {
 
 func sortScored(parts []ScoredID) {
 	slices.SortFunc(parts, cmpScored)
+}
+
+// TopScores keeps hits with score > 0, orders them best-first, and returns at most k.
+// k <= 0 keeps every positive hit. Cosine lists use this instead of FuseRanks
+// because those scores share one scale.
+func TopScores(in []ScoredID, k int) []ScoredID {
+	out := in[:0]
+	for _, hit := range in {
+		if hit.Score > 0 {
+			out = append(out, hit)
+		}
+	}
+	sortScored(out)
+	if k > 0 && len(out) > k {
+		out = out[:k]
+	}
+	return out
 }

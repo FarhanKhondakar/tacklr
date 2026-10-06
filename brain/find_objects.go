@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -74,8 +75,13 @@ func (e *Engine) FindObjects(ctx context.Context, scope Scope, req FindObjectsRe
 	if len(lists) == 0 {
 		return page, nil
 	}
-	ranked := rrfFuse(lists, e.cfg.RRFk)
-	applyTemporal(ranked, e.cfg.lambdaValue(), e.cfg.Now())
+	if e.cfg.lambdaValue() > 0 {
+		if err := e.stampUpdatedAt(ctx, scope, lists); err != nil {
+			return page, fmt.Errorf("brain: hydrate objects: %w", err)
+		}
+		e.decayChannels(lists)
+	}
+	ranked := FuseRanks(lists, e.cfg.RRFk)
 	sortScored(ranked)
 
 	ids := make([]uuid.UUID, len(ranked))
@@ -143,6 +149,42 @@ func (e *Engine) FindObjects(ctx context.Context, scope Scope, req FindObjectsRe
 		HasMore:     end < len(keptIDs),
 		Objects:     rich[:end],
 	}, nil
+}
+
+// stampUpdatedAt copies store updated_at onto channel hits so decay can see age.
+// Graph hits often carry only a distance. A missing store row keeps a zero time.
+func (e *Engine) stampUpdatedAt(ctx context.Context, scope Scope, lists [][]ScoredID) error {
+	n := 0
+	for _, list := range lists {
+		n += len(list)
+	}
+	ids := make([]uuid.UUID, 0, n)
+	seen := make(map[uuid.UUID]struct{}, n)
+	for _, list := range lists {
+		for _, hit := range list {
+			if _, ok := seen[hit.ID]; ok {
+				continue
+			}
+			seen[hit.ID] = struct{}{}
+			ids = append(ids, hit.ID)
+		}
+	}
+	objs, err := e.store.GetMany(ctx, scope, ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[uuid.UUID]time.Time, len(objs))
+	for _, o := range objs {
+		byID[o.ID] = o.UpdatedAt
+	}
+	for i := range lists {
+		for j := range lists[i] {
+			if ts, ok := byID[lists[i][j].ID]; ok {
+				lists[i][j].UpdatedAt = ts
+			}
+		}
+	}
+	return nil
 }
 
 func (e *Engine) applyRerank(ctx context.Context, objects []RichObject) ([]RichObject, error) {

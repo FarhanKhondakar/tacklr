@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strconv"
@@ -15,10 +16,7 @@ const DefaultEmbeddingDim = 1536
 // into object_kinds. EmbeddingDim is the pgvector size and must match the embedder;
 // zero uses DefaultEmbeddingDim. This does not migrate an existing column to a new size.
 func (s *Store) Setup(ctx context.Context, kinds ...brain.KindSpec) error {
-	dim := s.EmbeddingDim
-	if dim <= 0 {
-		dim = DefaultEmbeddingDim
-	}
+	dim := cmp.Or(s.EmbeddingDim, DefaultEmbeddingDim)
 	for _, q := range schemaStatements(dim) {
 		if _, err := s.db.Exec(ctx, q); err != nil {
 			return fmt.Errorf("postgres: setup: %w", err)
@@ -116,5 +114,14 @@ func schemaStatements(dim int) []string {
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_bm25 ON session_messages
 			USING bm25 (search_text)
 			WITH (text_config = 'english')`,
+		// Any one stemmed query term must occur. Empty and stopword-only queries match nothing.
+		`CREATE OR REPLACE FUNCTION tacklr_any_term(q text) RETURNS tsquery
+		 LANGUAGE sql IMMUTABLE AS $$
+		   SELECT CASE
+		     WHEN q IS NULL OR btrim(q) = '' THEN NULL
+		     WHEN numnode(plainto_tsquery('english', q)) = 0 THEN NULL
+		     ELSE replace(plainto_tsquery('english', q)::text, ' & ', ' | ')::tsquery
+		   END
+		 $$`,
 	}
 }

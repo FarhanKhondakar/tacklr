@@ -86,6 +86,8 @@ func (s *Store) sessionLexical(ctx context.Context, scope brain.Scope, query str
 		       search_text <@> to_bm25query($1, 'idx_session_messages_bm25') AS score
 		FROM session_messages
 		WHERE namespace = $2::jsonb
+		  AND tacklr_any_term($1) IS NOT NULL
+		  AND to_tsvector('english', search_text) @@ tacklr_any_term($1)
 		ORDER BY search_text <@> to_bm25query($1, 'idx_session_messages_bm25')
 		LIMIT $3`
 	return s.queryScored(ctx, q, []any{query, raw, k}, true)
@@ -119,12 +121,14 @@ func (s *Store) sessionTrigram(ctx context.Context, scope brain.Scope, query str
 	}
 	q := `
 		SELECT id, role, search_text, id, position, updated_at,
-		       GREATEST(similarity(role, $1), similarity(search_text, $1)) AS score
+		       GREATEST(similarity(role, $1), word_similarity($1, search_text)) AS score
 		FROM session_messages
 		WHERE namespace = $2::jsonb
 		  AND (
-		    similarity(role, $1) > 0.3
-		    OR similarity(search_text, $1) > 0.3
+		    strpos(lower(role), lower($1)) > 0
+		    OR strpos(lower(search_text), lower($1)) > 0
+		    OR similarity(role, $1) > 0.3
+		    OR word_similarity($1, search_text) > 0.3
 		  )
 		ORDER BY score DESC
 		LIMIT $3`

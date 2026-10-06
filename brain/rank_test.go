@@ -43,7 +43,7 @@ func TestRRF_fusesRanks(t *testing.T) {
 		t.Fatalf("fill: %+v", got)
 	}
 
-	// Empty / nil lists and k<=0 defaults.
+	// Empty / nil lists. A zero k selects the default constant.
 	if got := FuseRanks(nil, 0); len(got) != 0 {
 		t.Fatalf("nil: %+v", got)
 	}
@@ -108,10 +108,10 @@ func TestEngineConfig_explicitZeroLambdaPreserved(t *testing.T) {
 		t.Fatalf("want preserved zero, got %v", cfg.Lambda)
 	}
 	cfg2 := EngineConfig{}.withDefaults()
-	if cfg2.Lambda == nil || *cfg2.Lambda != 0.02 {
-		t.Fatalf("want default lambda, got %v", cfg2.Lambda)
+	if cfg2.Lambda == nil || *cfg2.Lambda != 0 {
+		t.Fatalf("want default lambda 0, got %v", cfg2.Lambda)
 	}
-	if cfg2.lambdaValue() != 0.02 {
+	if cfg2.lambdaValue() != 0 {
 		t.Fatal("lambdaValue default")
 	}
 }
@@ -125,32 +125,49 @@ func TestPromote_multipleEvidenceAndParentHit(t *testing.T) {
 		{ID: p3, Score: 4, ParentID: &parent, Title: "c", Content: "mid", UpdatedAt: time.Now()},
 		{ID: parent, Score: 1, ParentID: nil, Title: "root", UpdatedAt: time.Now()},
 	}
-	out := promoteParents(parts, 2)
+	out := promoteParents(parts, 2, "", 0)
 	if len(out) != 1 || out[0].ParentID != parent {
 		t.Fatalf("%+v", out)
 	}
-	if out[0].Score != 5 {
-		t.Fatalf("max score: %v", out[0].Score)
+	if out[0].Score != 9 {
+		t.Fatalf("sum of top evidence: %v", out[0].Score)
 	}
 	if len(out[0].Evidence) != 2 || out[0].Evidence[0].PartID != p2 {
 		t.Fatalf("top evidence: %+v", out[0].Evidence)
 	}
 	long := ScoredID{ID: uuid.New(), Score: 9, ParentID: &parent, Content: strings.Repeat("z", 300), UpdatedAt: time.Now()}
-	out2 := promoteParents([]ScoredID{long}, 1)
+	out2 := promoteParents([]ScoredID{long}, 1, "", 0)
 	if len(out2) != 1 || !strings.HasSuffix(out2[0].Evidence[0].Snippet, "…") {
 		t.Fatalf("snippet truncate: %+v", out2)
 	}
-	if snippet("  ", 10) != "" || snippet("keep", 0) != "keep" {
+	if snippetAround("  ", "", 10) != "" || snippetAround("keep", "", 0) != "keep" {
 		t.Fatal("snippet empty/cap")
+	}
+	body := strings.Repeat("a", 80) + "oauth refresh" + strings.Repeat("b", 300)
+	if sn := snippetAround(body, "oauth refresh", 240); !strings.Contains(sn, "oauth refresh") || !strings.HasPrefix(sn, "…") || !strings.HasSuffix(sn, "…") {
+		t.Fatalf("snippet window: %q", sn)
 	}
 	def := promoteParents([]ScoredID{
 		{ID: p1, Score: 1, ParentID: &parent, Title: "a"},
 		{ID: p2, Score: 2, ParentID: &parent, Title: "b"},
 		{ID: p3, Score: 3, ParentID: &parent, Title: "c"},
 		{ID: uuid.New(), Score: 4, ParentID: &parent, Title: "d"},
-	}, 0)
+	}, 0, "", 0)
 	if len(def) != 1 || len(def[0].Evidence) != 3 {
 		t.Fatalf("default evidenceN: %+v", def)
+	}
+}
+
+func TestTopScores_keepsPositiveAndCuts(t *testing.T) {
+	high := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	low := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	got := TopScores([]ScoredID{
+		{ID: low, Score: 0.2},
+		{ID: high, Score: 2},
+		{ID: uuid.New(), Score: 0},
+	}, 1)
+	if len(got) != 1 || got[0].ID != high {
+		t.Fatalf("%+v", got)
 	}
 }
 

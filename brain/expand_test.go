@@ -289,28 +289,74 @@ func TestSearch_withReranker(t *testing.T) {
 	store := brain.NewMemoryStore()
 	ns := mustNS(t, "id", uuid.NewString())
 	now := time.Now().UTC()
-	parent, part := uuid.New(), uuid.New()
+	strong, weak := uuid.New(), uuid.New()
+	strongPart, weakPart := uuid.New(), uuid.New()
 	pos := 1
+	_ = store.Put(ctx, brain.Object{ID: strong, Kind: "Document", Title: "strong", Namespace: ns, UpdatedAt: now})
 	_ = store.Put(ctx, brain.Object{
-		ID: parent, Kind: "Document", Title: "rerank-doc", Namespace: ns, UpdatedAt: now,
+		ID: strongPart, Kind: "Chunk", Content: "alpha alpha alpha",
+		ParentID: &strong, Position: &pos, Namespace: ns, UpdatedAt: now,
 	})
+	_ = store.Put(ctx, brain.Object{ID: weak, Kind: "Document", Title: "weak", Namespace: ns, UpdatedAt: now})
 	_ = store.Put(ctx, brain.Object{
-		ID: part, Kind: "Chunk", Title: "chunk", Content: "unique rerank phrase alpha",
-		ParentID: &parent, Position: &pos, Namespace: ns, UpdatedAt: now,
+		ID: weakPart, Kind: "Chunk", Content: "alpha beta beta beta beta beta beta beta beta",
+		ParentID: &weak, Position: &pos, Namespace: ns, UpdatedAt: now,
 	})
 	eng, err := brain.NewEngine(store, brain.WithLexicalOnly(),
 		brain.WithReranker(reverseRerank{}),
-		brain.WithConfig(brain.EngineConfig{Now: func() time.Time { return now }}),
+		brain.WithConfig(brain.EngineConfig{DefaultLimit: 1, Now: func() time.Time { return now }}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := eng.Search(ctx, brain.Scope{Namespace: ns}, brain.SearchRequest{Query: "unique rerank phrase"}, brain.NewSearchContext())
+	page, err := eng.Search(ctx, brain.Scope{Namespace: ns}, brain.SearchRequest{Query: "alpha"}, brain.NewSearchContext())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Objects) == 0 {
-		t.Fatal("expected hits")
+	if len(page.Objects) != 1 || page.Objects[0].ID != weak {
+		t.Fatalf("rerank before page cut: %+v", page.Objects)
+	}
+}
+
+func TestSearch_optInDecayReorders(t *testing.T) {
+	ctx := context.Background()
+	store := brain.NewMemoryStore()
+	ns := mustNS(t, "id", uuid.NewString())
+	oldT := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := oldT
+	lam := 0.02
+	eng, err := brain.NewEngine(store, brain.WithLexicalOnly(), brain.WithConfig(brain.EngineConfig{
+		Lambda: &lam,
+		Now:    func() time.Time { return now },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := brain.Scope{Namespace: ns}
+	oldParent, newParent := uuid.New(), uuid.New()
+	oldPart, newPart := uuid.New(), uuid.New()
+	pos := 1
+	put := func(parent, part uuid.UUID, content string) {
+		t.Helper()
+		if err := store.Put(ctx, brain.Object{ID: parent, Kind: "Document", Namespace: ns, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(ctx, brain.Object{
+			ID: part, Kind: "Chunk", Content: content, ParentID: &parent, Position: &pos,
+			Namespace: ns, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(oldParent, oldPart, "alpha")
+	now = oldT.Add(200 * 24 * time.Hour)
+	put(newParent, newPart, "alpha beta beta beta beta beta beta beta beta")
+	page, err := eng.Search(ctx, scope, brain.SearchRequest{Query: "alpha"}, brain.NewSearchContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Objects) == 0 || page.Objects[0].ID != newParent {
+		t.Fatalf("decayed old hit should follow the fresh hit: %+v", page.Objects)
 	}
 }
 

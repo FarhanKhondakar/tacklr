@@ -126,6 +126,15 @@ func TestSessionMessages_liveSearchUnion(t *testing.T) {
 	if facts != 1 || savedID == uuid.Nil {
 		t.Fatalf("merged search = %+v", page.Objects)
 	}
+	lex, err := store.SearchLexical(ctx, scope, marker, brain.Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hit := range lex {
+		if strings.Contains(hit.Content, "laterwindow") {
+			t.Fatalf("lexical non-match: %+v", hit)
+		}
+	}
 	got, err := eng.Read(ctx, scope, savedID)
 	if err != nil || got.Kind != brain.KindSessionMessage || !strings.Contains(got.Content, token) {
 		t.Fatalf("read = %+v err=%v", got, err)

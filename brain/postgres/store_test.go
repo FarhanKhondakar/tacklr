@@ -277,6 +277,11 @@ func TestPostgresStore_liveRetrievalChannels(t *testing.T) {
 	if len(tri) == 0 || tri[0].ID != chunkOAuth {
 		t.Fatalf("trigram top hit: %+v", tri)
 	}
+	mustExec(t, pool, `UPDATE objects SET content = content || ' ' || repeat('padding word ', 80) || 'grace window' WHERE id = $1`, chunkOAuth)
+	grace, err := store.SearchTrigram(ctx, scopeA, "grace window", brain.Filter{}, 5)
+	if err != nil || len(grace) == 0 || grace[0].ID != chunkOAuth {
+		t.Fatalf("trigram phrase inside long body: %+v err=%v", grace, err)
+	}
 
 	vecB, err := store.SearchVector(ctx, brain.Scope{Namespace: nsB}, []float32{1, 0, 0}, brain.Filter{}, 5)
 	if err != nil {

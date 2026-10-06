@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -23,13 +24,16 @@ type Reranker interface {
 }
 
 // EngineConfig holds engine-owned ranking knobs (not tool arguments).
-// Lambda nil → default mild decay; explicit 0 disables temporal bias.
+// Lambda nil → 0, so age does not change rank. A positive value decays each
+// channel before fusion. Explicit 0 stays 0.
+// SnippetCap is the evidence quote length in runes. 0 selects 240.
 // FailOn* false (default) soft-degrades embedder/graph failures; true surfaces errors.
 type EngineConfig struct {
 	CandidateK          int
 	RRFk                int
 	Lambda              *float64
 	EvidenceN           int
+	SnippetCap          int
 	DefaultLimit        int
 	MaxLimit            int
 	ExpandInlineMax     int
@@ -43,14 +47,16 @@ type EngineConfig struct {
 	Now                 func() time.Time
 }
 
-// DefaultEngineConfig returns mild production defaults.
+// DefaultEngineConfig returns the engine defaults. A zero count on EngineConfig
+// takes the matching field from here. Lambda stays a pointer because 0 is a real setting.
 func DefaultEngineConfig() EngineConfig {
-	lam := 0.02
+	lam := 0.0
 	return EngineConfig{
 		CandidateK:         40,
 		RRFk:               60,
 		Lambda:             &lam,
 		EvidenceN:          3,
+		SnippetCap:         defaultSnippetCap,
 		DefaultLimit:       10,
 		MaxLimit:           50,
 		ExpandInlineMax:    20,
@@ -65,17 +71,18 @@ func DefaultEngineConfig() EngineConfig {
 
 func (c EngineConfig) withDefaults() EngineConfig {
 	d := DefaultEngineConfig()
-	c.CandidateK = posOr(c.CandidateK, d.CandidateK)
-	c.RRFk = posOr(c.RRFk, d.RRFk)
-	c.EvidenceN = posOr(c.EvidenceN, d.EvidenceN)
-	c.DefaultLimit = posOr(c.DefaultLimit, d.DefaultLimit)
-	c.MaxLimit = posOr(c.MaxLimit, d.MaxLimit)
-	c.ExpandInlineMax = posOr(c.ExpandInlineMax, d.ExpandInlineMax)
-	c.SiblingRadius = posOr(c.SiblingRadius, d.SiblingRadius)
-	c.GraphNeighborK = posOr(c.GraphNeighborK, d.GraphNeighborK)
-	c.MaxExpandHops = posOr(c.MaxExpandHops, d.MaxExpandHops)
-	c.MaxGraphExpandRPCs = posOr(c.MaxGraphExpandRPCs, d.MaxGraphExpandRPCs)
-	c.MaxResultSetSize = posOr(c.MaxResultSetSize, d.MaxResultSetSize)
+	c.CandidateK = cmp.Or(c.CandidateK, d.CandidateK)
+	c.RRFk = cmp.Or(c.RRFk, d.RRFk)
+	c.EvidenceN = cmp.Or(c.EvidenceN, d.EvidenceN)
+	c.SnippetCap = cmp.Or(c.SnippetCap, d.SnippetCap)
+	c.DefaultLimit = cmp.Or(c.DefaultLimit, d.DefaultLimit)
+	c.MaxLimit = cmp.Or(c.MaxLimit, d.MaxLimit)
+	c.ExpandInlineMax = cmp.Or(c.ExpandInlineMax, d.ExpandInlineMax)
+	c.SiblingRadius = cmp.Or(c.SiblingRadius, d.SiblingRadius)
+	c.GraphNeighborK = cmp.Or(c.GraphNeighborK, d.GraphNeighborK)
+	c.MaxExpandHops = cmp.Or(c.MaxExpandHops, d.MaxExpandHops)
+	c.MaxGraphExpandRPCs = cmp.Or(c.MaxGraphExpandRPCs, d.MaxGraphExpandRPCs)
+	c.MaxResultSetSize = cmp.Or(c.MaxResultSetSize, d.MaxResultSetSize)
 	if c.Lambda == nil {
 		c.Lambda = d.Lambda
 	}
@@ -86,13 +93,6 @@ func (c EngineConfig) withDefaults() EngineConfig {
 }
 
 func (c EngineConfig) allowEmbedderDegrade() bool { return !c.FailOnEmbedderError }
-
-func posOr(v, fallback int) int {
-	if v > 0 {
-		return v
-	}
-	return fallback
-}
 
 func (c EngineConfig) lambdaValue() float64 {
 	return *c.Lambda

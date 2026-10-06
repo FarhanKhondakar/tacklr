@@ -437,7 +437,9 @@ func (s *Store) SearchLexical(ctx context.Context, scope brain.Scope, query stri
 		SELECT id, title, content, parent_id, position, updated_at,
 		       search_text <@> to_bm25query($1, 'idx_objects_bm25') AS score
 		FROM objects
-		WHERE deleted_at IS NULL AND parent_id IS NOT NULL%s
+		WHERE deleted_at IS NULL AND parent_id IS NOT NULL
+		  AND tacklr_any_term($1) IS NOT NULL
+		  AND to_tsvector('english', search_text) @@ tacklr_any_term($1)%s
 		ORDER BY search_text <@> to_bm25query($1, 'idx_objects_bm25')
 		LIMIT $%d`, where, limitPos)
 	hits, err := s.queryScored(ctx, q, args, true)
@@ -469,11 +471,17 @@ func (s *Store) SearchVector(ctx context.Context, scope brain.Scope, embedding [
 		ORDER BY embedding <=> $1::vector
 		LIMIT $%d`, where, limitPos)
 	hits, err := s.queryScored(ctx, q, args, false)
-	if err != nil || strings.TrimSpace(scope.SessionID) == "" {
-		return hits, err
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(scope.SessionID) == "" {
+		return brain.TopScores(hits, k), nil
 	}
 	extra, err := s.sessionVector(ctx, scope, embedding, k)
-	return mergeRanked(hits, extra, err)
+	if err != nil {
+		return nil, err
+	}
+	return brain.TopScores(append(hits, extra...), k), nil
 }
 
 // SearchTrigram implements PartSearcher using pg_trgm similarity over parts.
@@ -490,12 +498,14 @@ func (s *Store) SearchTrigram(ctx context.Context, scope brain.Scope, query stri
 	args = append(args, k)
 	q := fmt.Sprintf(`
 		SELECT id, title, content, parent_id, position, updated_at,
-		       GREATEST(similarity(coalesce(title,''), $1), similarity(coalesce(content,''), $1)) AS score
+		       GREATEST(similarity(coalesce(title,''), $1), word_similarity($1, coalesce(content,''))) AS score
 		FROM objects
 		WHERE deleted_at IS NULL AND parent_id IS NOT NULL
 		  AND (
-		    similarity(coalesce(title,''), $1) > 0.3
-		    OR similarity(coalesce(content,''), $1) > 0.3
+		    strpos(lower(coalesce(title,'')), lower($1)) > 0
+		    OR strpos(lower(coalesce(content,'')), lower($1)) > 0
+		    OR similarity(coalesce(title,''), $1) > 0.3
+		    OR word_similarity($1, coalesce(content,'')) > 0.3
 		  )%s
 		ORDER BY score DESC
 		LIMIT $%d`, where, limitPos)

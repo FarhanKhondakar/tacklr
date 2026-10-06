@@ -4,11 +4,16 @@ import (
 	"cmp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
 
-const defaultSnippetCap = 240
+const (
+	defaultSnippetCap = 240
+	snippetLookbehind = 40
+)
 
 // promotedParent is a parent candidate after part aggregation.
 type promotedParent struct {
@@ -19,11 +24,12 @@ type promotedParent struct {
 
 // promoteParents groups hits by parent. A hit with no parent_id is itself a parent
 // (no evidence). Part hits attach as evidence under parent_id.
-// Parent score is the max contributing score; evidence keeps top evidenceN parts.
-func promoteParents(parts []ScoredID, evidenceN int) []promotedParent {
-	if evidenceN <= 0 {
-		evidenceN = 3
-	}
+// When a parent has evidence, its score is the sum of the kept evidence scores.
+// A parent with no parts keeps its own score. A zero evidenceN selects 3.
+// A zero snippetCap selects defaultSnippetCap. query places the quote on the match.
+func promoteParents(parts []ScoredID, evidenceN int, query string, snippetCap int) []promotedParent {
+	evidenceN = cmp.Or(evidenceN, 3)
+	snippetCap = cmp.Or(snippetCap, defaultSnippetCap)
 	type bucket struct {
 		score    float64
 		evidence []Evidence
@@ -48,7 +54,7 @@ func promoteParents(parts []ScoredID, evidenceN int) []promotedParent {
 			b.evidence = append(b.evidence, Evidence{
 				PartID:     p.ID,
 				Title:      p.Title,
-				Snippet:    snippet(p.Content, defaultSnippetCap),
+				Snippet:    snippetAround(p.Content, query, snippetCap),
 				Score:      p.Score,
 				Position:   p.Position,
 				Properties: p.Properties,
@@ -69,6 +75,12 @@ func promoteParents(parts []ScoredID, evidenceN int) []promotedParent {
 		if len(b.evidence) > evidenceN {
 			b.evidence = b.evidence[:evidenceN]
 		}
+		if len(b.evidence) > 0 {
+			b.score = 0
+			for _, ev := range b.evidence {
+				b.score += ev.Score
+			}
+		}
 		out = append(out, promotedParent{
 			ParentID: pid,
 			Score:    b.score,
@@ -84,15 +96,44 @@ func promoteParents(parts []ScoredID, evidenceN int) []promotedParent {
 	return out
 }
 
-// snippet trims s to at most maxRunes and appends an ellipsis when truncated.
-func snippet(s string, maxRunes int) string {
+// snippetAround returns at most maxRunes of s, starting snippetLookbehind runes
+// before the earliest query word. An empty query, or a query with no word in s,
+// keeps the prefix. A window that is not the full text gains an ellipsis on the cut side.
+func snippetAround(s, query string, maxRunes int) string {
 	s = strings.TrimSpace(s)
 	if s == "" || maxRunes <= 0 {
 		return s
 	}
-	cut := capRunes(s, maxRunes)
-	if cut == s {
-		return s
+	folded := strings.ToLower(s)
+	idx := -1
+	for _, tok := range strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	}) {
+		if i := strings.Index(folded, tok); i >= 0 && (idx < 0 || i < idx) {
+			idx = i
+		}
 	}
-	return cut + "…"
+	if idx < 0 {
+		cut := capRunes(s, maxRunes)
+		if cut == s {
+			return s
+		}
+		return cut + "…"
+	}
+	start := idx
+	for n := snippetLookbehind; n > 0 && start > 0; n-- {
+		start--
+		for start > 0 && !utf8.RuneStart(s[start]) {
+			start--
+		}
+	}
+	cut := capRunes(s[start:], maxRunes)
+	out := cut
+	if start > 0 {
+		out = "…" + out
+	}
+	if start+len(cut) < len(s) {
+		out += "…"
+	}
+	return out
 }

@@ -155,9 +155,6 @@ func (e *Engine) ExpandMany(ctx context.Context, scope Scope, req ExpandManyRequ
 	budget := req.NeighborBudget
 	if budget <= 0 {
 		budget = e.cfg.MaxResultSetSize
-		if budget <= 0 {
-			budget = 1000
-		}
 	}
 
 	wantContainment, graphLabels := resolveExpandRelations(req.RelationTypes, req.WantContainment)
@@ -378,9 +375,6 @@ func (e *Engine) graphNeighborsMulti(ctx context.Context, scope Scope, id uuid.U
 		maxHops = e.cfg.MaxExpandHops
 	}
 	rpcBudget := e.cfg.MaxGraphExpandRPCs
-	if rpcBudget <= 0 {
-		rpcBudget = 64
-	}
 	dir := normalizeExpandDirection(direction)
 
 	frontier := []uuid.UUID{id}

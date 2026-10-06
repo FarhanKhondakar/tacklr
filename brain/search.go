@@ -21,7 +21,7 @@ func (e *Engine) Search(ctx context.Context, scope Scope, req SearchRequest, res
 		return SearchPage{}, err
 	}
 	ranked = filterScoredByScopeIDs(ranked, req.ScopeIDs)
-	return e.materialize(ctx, scope, ranked, req.Limit, results)
+	return e.materialize(ctx, scope, ranked, req.Query, req.Limit, results)
 }
 
 // FindExact is corpus retrieval without the dense channel: UUID Get, else
@@ -33,7 +33,7 @@ func (e *Engine) FindExact(ctx context.Context, scope Scope, req SearchRequest, 
 		return SearchPage{}, err
 	}
 	ranked = filterScoredByScopeIDs(ranked, req.ScopeIDs)
-	return e.materialize(ctx, scope, ranked, req.Limit, results)
+	return e.materialize(ctx, scope, ranked, req.Query, req.Limit, results)
 }
 
 // filterScoredByScopeIDs keeps hits whose id or parent_id is in allow (empty allow = no-op).
@@ -96,17 +96,23 @@ func (e *Engine) Continue(ctx context.Context, scope Scope, resultSetID uuid.UUI
 	}, nil
 }
 
-func (e *Engine) materialize(ctx context.Context, scope Scope, ranked []ScoredID, limit int, results ResultSetStore) (SearchPage, error) {
+func (e *Engine) materialize(ctx context.Context, scope Scope, ranked []ScoredID, query string, limit int, results ResultSetStore) (SearchPage, error) {
 	limit = e.normalizeLimit(limit)
-	applyTemporal(ranked, e.cfg.lambdaValue(), e.cfg.Now())
 	sortScored(ranked)
-	promoted := promoteParents(ranked, e.cfg.EvidenceN)
+	promoted := promoteParents(ranked, e.cfg.EvidenceN, query, e.cfg.SnippetCap)
 
 	ids := make([]uuid.UUID, len(promoted))
 	byID := make(map[uuid.UUID]promotedParent, len(promoted))
 	for i, p := range promoted {
 		ids[i] = p.ParentID
 		byID[p.ParentID] = p
+	}
+	if e.reranker != nil {
+		var err error
+		ids, err = e.rerankPromoted(ctx, scope, ids, byID)
+		if err != nil {
+			return SearchPage{}, err
+		}
 	}
 	page, err := e.pageIDs(ctx, scope, ids, limit, results, nil)
 	if err != nil {
@@ -119,11 +125,61 @@ func (e *Engine) materialize(ctx context.Context, scope Scope, ranked []ScoredID
 			page.Objects[i].Evidence = p.Evidence
 		}
 	}
-	page.Objects, err = e.applyRerank(ctx, page.Objects)
-	if err != nil {
-		return SearchPage{}, err
-	}
 	return page, nil
+}
+
+// rerankPromoted asks the host reranker to order up to CandidateK parents, then
+// keeps any parents beyond that cutoff in their original order.
+func (e *Engine) rerankPromoted(ctx context.Context, scope Scope, ids []uuid.UUID, byID map[uuid.UUID]promotedParent) ([]uuid.UUID, error) {
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	n := min(e.cfg.CandidateK, len(ids))
+	head, err := e.hydrateIDs(ctx, scope, ids[:n])
+	if err != nil {
+		return nil, err
+	}
+	for i := range head {
+		if p, ok := byID[head[i].ID]; ok {
+			sc := p.Score
+			head[i].Score = &sc
+			head[i].Evidence = p.Evidence
+		}
+	}
+	head, err = e.applyRerank(ctx, head)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, 0, len(head)+len(ids)-n)
+	seen := make(map[uuid.UUID]struct{}, len(head))
+	for _, o := range head {
+		if _, ok := seen[o.ID]; ok {
+			continue
+		}
+		seen[o.ID] = struct{}{}
+		out = append(out, o.ID)
+	}
+	for _, id := range ids[n:] {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// decayChannels multiplies each channel by age, then re-sorts, before fusion.
+// λ <= 0 leaves the lists in the store's order so RRF still sees that rank.
+func (e *Engine) decayChannels(lists [][]ScoredID) {
+	lam := e.cfg.lambdaValue()
+	if lam <= 0 {
+		return
+	}
+	now := e.cfg.Now()
+	for i := range lists {
+		applyTemporal(lists[i], lam, now)
+		sortScored(lists[i])
+	}
 }
 
 // prepareSearch validates the query/filters and returns effective filters for the store.
@@ -179,7 +235,8 @@ func (e *Engine) hybridCandidates(ctx context.Context, scope Scope, req SearchRe
 			}
 		}
 	}
-	return rrfFuse(lists, e.cfg.RRFk), nil
+	e.decayChannels(lists)
+	return FuseRanks(lists, e.cfg.RRFk), nil
 }
 
 func (e *Engine) exactCandidates(ctx context.Context, scope Scope, req SearchRequest) ([]ScoredID, error) {
@@ -216,7 +273,9 @@ func (e *Engine) exactCandidates(ctx context.Context, scope Scope, req SearchReq
 	if err != nil {
 		return nil, err
 	}
-	fused := rrfFuse([][]ScoredID{lex, tri}, e.cfg.RRFk)
+	lists := [][]ScoredID{lex, tri}
+	e.decayChannels(lists)
+	fused := FuseRanks(lists, e.cfg.RRFk)
 	q := strings.ToLower(query)
 	// Prefer exact title matches (boost), then remaining fused candidates.
 	boosted := make([]ScoredID, 0)
