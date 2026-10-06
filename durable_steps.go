@@ -228,9 +228,10 @@ func (a *TurnManager) runToolCall(ctx context.Context, tc ToolCall, out chan Str
 		Runtime:  runtimeCopy,
 	})
 	effects.merge(hookDisp)
+	visible := hookOutput(output, hookDisp)
 	toolSpan.Finish("success", nil)
 	a.emitPlanUpdate(out)
-	msg := a.emitToolResult(out, tc, output, "success")
+	msg := a.emitToolResult(out, tc, visible, "success")
 	if !toolDisp.SuppressWindowMessage && !hookDisp.SuppressWindowMessage {
 		_ = a.addToContext(ctx, msg, out)
 	}
