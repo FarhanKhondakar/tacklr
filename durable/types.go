@@ -21,10 +21,10 @@ type SessionID string
 type Seq uint64
 
 // AuthContext is credentials and mount intent for one work item (Prompt, Resume,
-// or a one-shot child workflow). Protocols map their wire auth into this type.
+// or a child session). Protocols map their wire auth into this type.
 // Autonomous hosts set it on the payload that queues the work. Tokens are not
-// stored in SnapshotStore or Temporal event history. The Temporal adapter
-// writes them to SecretStorage before signaling.
+// stored in the snapshot or the durable history. The runtime writes them to
+// SecretStorage before the work item runs.
 type AuthContext struct {
 	// Bindings are this slice's mounts and/or provider tokens. A binding with
 	// an alias upserts the recipe. A binding with only provider+token refreshes
@@ -47,7 +47,6 @@ type MountRecipe struct {
 
 // CreateSession is the typed input for Runtime.CreateSession.
 type CreateSession struct {
-	AgentID    string
 	SessionID  SessionID
 	MCPServers []mcp.MCPConfig
 	// Mounts seeds the session recipe cache (no secrets). Tokens arrive on Prompt.
@@ -55,16 +54,15 @@ type CreateSession struct {
 	// Parent, when set, makes this a child session of that parent. The child
 	// reuses the same wait loop. Empty MCPServers/Mounts inherit from parent.
 	Parent SessionID
-	// Specialist selects a Specialist from the parent's catalog spec. Required
-	// with Parent for spawn_specialist children. The host does not register the
-	// worker as a top-level catalog agent.
+	// Specialist selects an assistant on the agent's Specialists list.
+	// Required with Parent for spawn_specialist children.
 	Specialist string
-	// Worker selects a named JobHandler on Runtime Config.Jobs. Exclusive
-	// with Specialist. The child session runs that handler instead of a model.
+	// Worker selects a named job handler. Exclusive with Specialist.
+	// The child session runs that handler instead of a model.
 	Worker string
 	// State seeds checkpoint userState (JSON-serializable values).
-	// Tools read it via HarnessRuntime.StateGet. Canonical copy is
-	// Snapshot.Checkpoint, not Temporal workflow variables. No tokens or clients.
+	// Tools read it via HarnessRuntime.StateGet. The canonical copy is
+	// Snapshot.Checkpoint. No tokens or clients.
 	// Child sessions do not inherit this map.
 	State map[string]any
 }
@@ -73,8 +71,6 @@ type CreateSession struct {
 type Prompt struct {
 	Text        string
 	UserMessage *tacklr.Message
-	// AgentID, when set, selects the catalog agent for this turn slice.
-	AgentID string
 	// MCPServers, when non-nil, replaces session-scoped MCP configs for this turn.
 	MCPServers []mcp.MCPConfig
 	Auth       AuthContext
@@ -91,11 +87,10 @@ type Resume struct {
 	State map[string]any
 }
 
-// Snapshot is the session record in SnapshotStore. Both runtimes write the
-// same shape. Wait-loop fields (leftover Temporal tool calls, MCP overlay,
-// child futures) stay on the loop, not here.
+// Snapshot is the session record in SnapshotStore. Wait-loop fields
+// (leftover tool calls, the MCP overlay, and child handles) stay on the
+// session, not here.
 type Snapshot struct {
-	AgentID    string
 	Specialist string
 	Parent     SessionID
 	// Children are child session ids in start order (no handles, no tokens).
@@ -121,7 +116,7 @@ const (
 const (
 	// SessionKindSpecialist is Status.Kind for spawn_specialist children.
 	SessionKindSpecialist = "specialist"
-	// SessionKindWorker is Status.Kind for Config.Jobs children.
+	// SessionKindWorker is Status.Kind for a named job-handler child.
 	SessionKindWorker = "worker"
 )
 
@@ -139,7 +134,7 @@ type SessionStatus struct {
 	Waiting bool
 }
 
-// EventLog topics. Temporal Workflow Streams uses the same names.
+// EventLog topics.
 const (
 	TopicEvents = "events"
 	TopicRetry  = "retry"
@@ -150,14 +145,13 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	// ErrSessionExists is CreateSession with an id that is already live.
 	ErrSessionExists = errors.New("session already exists")
-	// ErrAgentNotFound is Catalog miss.
-	ErrAgentNotFound = errors.New("agent not found")
 	// ErrStaleCheckpoint is SnapshotStore.Save when expected Revision does not
 	// match the row (another writer already saved). Reload and retry.
 	ErrStaleCheckpoint = errors.New("stale checkpoint")
 )
 
-// JobHandler runs a named background job. Register on temporal.Config.Jobs.
+// JobHandler runs a named background job. The runtime registers handlers
+// by name. Schedule starts one.
 type JobHandler func(ctx context.Context, task string) (string, error)
 
 // ChildSessionID is the stable id for a spawn_specialist child session.
@@ -170,9 +164,8 @@ func JobID(parent SessionID, name, callID string) SessionID {
 	return SessionID(fmt.Sprintf("%s/j/%s/%s", parent, strings.TrimSpace(name), strings.TrimSpace(callID)))
 }
 
-// EventLog is the portable progress stream. Temporal implements it with
-// Workflow Streams. In-process uses a memory channel. Topics are TopicEvents
-// and TopicRetry (activity attempt > 1).
+// EventLog is the session progress stream. Topics are TopicEvents and
+// TopicRetry (a repeated attempt).
 type EventLog interface {
 	Append(ctx context.Context, sessionID SessionID, topic string, ev tacklr.StreamEvent) error
 	Subscribe(ctx context.Context, sessionID SessionID, after Seq) (<-chan tacklr.StreamEvent, error)
@@ -189,8 +182,8 @@ type Revision string
 //
 // Frozen contents: SessionCheckpoint (window, plan, parked interrupt, userState),
 // MountRecipe topology, and session identity (agent, parent, specialist, child
-// ids). Tokens, file bytes, leftover unstarted Temporal tool calls, MCP env
-// and headers, and child workflow futures never go here.
+// ids). Tokens, file bytes, leftover unstarted tool calls, MCP env and
+// headers, and child session handles never go here.
 //
 // Save's expected Revision must match the last Load (zero if no row).
 // Mismatch means another writer already saved — reload and retry.
@@ -209,6 +202,15 @@ func (a AuthContext) WithoutSecrets() AuthContext {
 		out.Bindings[i].Auth = vfs.Credential{}
 	}
 	return out
+}
+
+// DeleteSessionMessages removes this session's saved messages from the agent's brain.
+// A nil brain is a no-op.
+func DeleteSessionMessages(ctx context.Context, agent tacklr.AgentOptions, sessionID SessionID) {
+	if agent.Brain == nil || sessionID == "" {
+		return
+	}
+	_ = agent.Brain.DeleteSessionMessages(ctx, string(sessionID))
 }
 
 func cloneAuth(a AuthContext) AuthContext {

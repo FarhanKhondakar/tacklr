@@ -14,7 +14,6 @@ var (
 	ErrInvalidRequest         = errors.New("invalid request")
 	ErrMethodNotFound         = errors.New("method not found")
 	ErrInternal               = errors.New("internal server error")
-	ErrAgentNotFound          = durable.ErrAgentNotFound
 	ErrSessionNotFound        = durable.ErrSessionNotFound
 	ErrAuthenticationRequired = tacklrsecurity.ErrAuthenticationRequired
 	ErrAuthenticationFailed   = tacklrsecurity.ErrAuthenticationFailed

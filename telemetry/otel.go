@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -24,15 +25,13 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
-	temporalotel "go.temporal.io/sdk/contrib/opentelemetry-v2"
 )
 
 // InstrumentationName is the OpenTelemetry instrumentation scope for Tacklr.
 const InstrumentationName = "github.com/ryanaldo34/tacklr"
 
-// Config is the host-facing OTLP setup. Empty OTLPEndpoint (and no
-// OTEL_EXPORTER_OTLP_ENDPOINT) still installs Temporal's ReplaySafe tracer
-// provider so SessionWorkflow can call temporalotel.Tracer.
+// Config is the host-facing OTLP setup. An empty OTLPEndpoint (and no
+// OTEL_EXPORTER_OTLP_ENDPOINT) installs a tracer that does not export.
 type Config struct {
 	ServiceName    string
 	ServiceVersion string
@@ -44,9 +43,10 @@ type Config struct {
 	DisableLogs    bool
 }
 
-// Init installs the process-wide TracerProvider (ReplaySafe), MeterProvider,
-// LoggerProvider, and W3C propagator. Call once, before durable/temporal.Dial.
-// The Temporal OTEL v2 plugin and harness both use otel.GetTracerProvider().
+// Init installs the process-wide TracerProvider, MeterProvider,
+// LoggerProvider, and W3C propagator. The tracer is the standard SDK
+// provider. A durable backend that needs a different provider replaces it
+// from this same configuration.
 func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) {
 	endpoint := strings.TrimSpace(cfg.OTLPEndpoint)
 	if endpoint == "" {
@@ -65,36 +65,29 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		propagation.Baggage{},
 	))
 
+	opts, err := traceProviderOptions(ctx, cfg, endpoint, protocol)
+	if err != nil {
+		return nil, err
+	}
+	tp := sdktrace.NewTracerProvider(opts...)
+	otel.SetTracerProvider(tp)
+	traces.mu.Lock()
+	traces.cfg = cfg
+	traces.endpoint = endpoint
+	traces.protocol = protocol
+	traces.set = true
+	traces.shutdown = tp.Shutdown
+	traces.mu.Unlock()
+
 	if endpoint == "" {
-		tp := temporalotel.NewReplaySafeTracerProvider()
-		otel.SetTracerProvider(tp)
 		SetMeterProvider(nil)
 		global.SetLoggerProvider(lognoop.NewLoggerProvider())
-		return tp.Shutdown, nil
+		return traces.shutdownAll(nil, nil), nil
 	}
 
 	res := DefaultResource(cfg.ServiceName, cfg.ServiceVersion)
 	insecure := cfg.Insecure || strings.HasPrefix(endpoint, "http://") || !strings.Contains(endpoint, "://")
 	host := stripScheme(endpoint)
-
-	exp, err := newTraceExporter(ctx, host, protocol, insecure)
-	if err != nil {
-		return nil, err
-	}
-	ratio := cfg.SampleRatio
-	if ratio <= 0 || ratio > 1 {
-		ratio = 1
-	}
-	sampler := sdktrace.AlwaysSample()
-	if ratio < 1 {
-		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
-	}
-	tp := temporalotel.NewReplaySafeTracerProvider(
-		sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(2*time.Second)),
-		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sampler),
-	)
-	otel.SetTracerProvider(tp)
 
 	var mp *sdkmetric.MeterProvider
 	if !cfg.DisableMetrics {
@@ -119,6 +112,21 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		global.SetLoggerProvider(lp)
 	}
 
+	return traces.shutdownAll(mp, lp), nil
+}
+
+type traceSlot struct {
+	mu       sync.Mutex
+	set      bool
+	cfg      Config
+	endpoint string
+	protocol string
+	shutdown func(context.Context) error
+}
+
+var traces traceSlot
+
+func (s *traceSlot) shutdownAll(mp *sdkmetric.MeterProvider, lp *sdklog.LoggerProvider) func(context.Context) error {
 	return func(ctx context.Context) error {
 		var first error
 		if lp != nil {
@@ -129,10 +137,70 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 				first = err
 			}
 		}
-		if err := tp.Shutdown(ctx); err != nil && first == nil {
-			first = err
+		s.mu.Lock()
+		fn := s.shutdown
+		s.mu.Unlock()
+		if fn != nil {
+			if err := fn(ctx); err != nil && first == nil {
+				first = err
+			}
 		}
 		return first
+	}
+}
+
+// TracerInstalled reports whether Init has installed the process tracer.
+func TracerInstalled() bool {
+	traces.mu.Lock()
+	defer traces.mu.Unlock()
+	return traces.set
+}
+
+// ReinstallTracer rebuilds the process tracer from the last Init configuration.
+// build owns the provider type. The previous tracer is shut down.
+func ReinstallTracer(ctx context.Context, build func(opts ...sdktrace.TracerProviderOption) (trace.TracerProvider, func(context.Context) error)) error {
+	traces.mu.Lock()
+	defer traces.mu.Unlock()
+	if !traces.set {
+		return fmt.Errorf("otel: Init was not called")
+	}
+	opts, err := traceProviderOptions(ctx, traces.cfg, traces.endpoint, traces.protocol)
+	if err != nil {
+		return err
+	}
+	tp, shutdown := build(opts...)
+	otel.SetTracerProvider(tp)
+	old := traces.shutdown
+	traces.shutdown = shutdown
+	if old != nil {
+		_ = old(context.Background())
+	}
+	return nil
+}
+
+func traceProviderOptions(ctx context.Context, cfg Config, endpoint, protocol string) ([]sdktrace.TracerProviderOption, error) {
+	if endpoint == "" {
+		return nil, nil
+	}
+	res := DefaultResource(cfg.ServiceName, cfg.ServiceVersion)
+	insecure := cfg.Insecure || strings.HasPrefix(endpoint, "http://") || !strings.Contains(endpoint, "://")
+	host := stripScheme(endpoint)
+	exp, err := newTraceExporter(ctx, host, protocol, insecure)
+	if err != nil {
+		return nil, err
+	}
+	ratio := cfg.SampleRatio
+	if ratio <= 0 || ratio > 1 {
+		ratio = 1
+	}
+	sampler := sdktrace.AlwaysSample()
+	if ratio < 1 {
+		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+	}
+	return []sdktrace.TracerProviderOption{
+		sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(2*time.Second)),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
 	}, nil
 }
 
@@ -226,7 +294,6 @@ func Tracer() trace.Tracer {
 }
 
 // SetTracerProvider installs tp as the process-wide TracerProvider.
-// Hosts that already own OTEL should pass a ReplaySafe provider for Temporal.
 func SetTracerProvider(tp trace.TracerProvider) {
 	if tp == nil {
 		tp = tracenoop.NewTracerProvider()

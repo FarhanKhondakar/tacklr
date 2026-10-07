@@ -52,7 +52,7 @@ func ApplyAuth(recipes []MountRecipe, auth AuthContext) []MountRecipe {
 	return out
 }
 
-// BindingsForTurn builds the secret-bearing mounts for one activity/turn.
+// BindingsForTurn builds the secret-bearing mounts for one turn.
 // Each cached recipe is included when a token for its provider is on auth.
 func BindingsForTurn(recipes []MountRecipe, auth AuthContext) []vfs.Binding {
 	byProvider, byAlias := tokenIndex(auth)

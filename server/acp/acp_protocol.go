@@ -141,7 +141,7 @@ func (p *acpProtocol) handleACPWebSocket(env server.ProtocolEnv, w http.Response
 			}
 			reqEnv := server.ProtocolEnv{
 				Runtime:     env.Runtime,
-				Catalog:     env.Catalog,
+				Agent:       env.Agent,
 				Conn:        reqConn,
 				Security:    env.Security,
 				Connections: env.Connections,
@@ -205,7 +205,7 @@ func (p *acpProtocol) dispatch(ctx context.Context, env server.ProtocolEnv, pr *
 		if env.Conn.Ask != nil {
 			env.Conn.Ask.NoteHello(pr.ClientCapsRaw)
 		}
-		return InitializeResult(env.Catalog, pr.ProtocolVersion, p.authMethods, p.logout), nil
+		return InitializeResult(env.Agent, pr.ProtocolVersion, p.authMethods, p.logout), nil
 	case "authenticate":
 		if err := p.authenticate(ctx, env, pr.AuthMethodID); err != nil {
 			return nil, err
@@ -305,7 +305,6 @@ func (p *acpProtocol) handleSessionTurn(ctx context.Context, env server.Protocol
 	turn := server.PromptOrResume{Prompt: durable.Prompt{
 		Text:        req.Prompt,
 		UserMessage: req.UserMessage,
-		AgentID:     req.AgentID,
 		MCPServers:  req.MCPServers,
 		Auth:        req.Auth,
 	}}
@@ -338,7 +337,7 @@ func (p *acpProtocol) OnStreamEvent(ctx context.Context, env server.ProtocolEnv,
 		}
 	}
 
-	if ev.Type == tacklr.StreamEventError && (errors.Is(ev.Error, context.Canceled) || ev.Fail == context.Canceled.Error()) {
+	if ev.Type == tacklr.StreamEventError && errors.Is(ev.Error, context.Canceled) {
 		if env.Conn != nil && env.Conn.Writer != nil && len(reqID) > 0 {
 			_ = env.Conn.Writer.WriteResult(reqID, acpPromptResult(stopReasonCancelled))
 		}
@@ -429,12 +428,10 @@ func resolveSelectionViaElicitation(ctx context.Context, env server.ProtocolEnv,
 
 // Prompt baseline (no capability bits): Text + ResourceLink are always accepted.
 // Optional: image (model-gated), audio (off), embeddedContext (Resource text/blob).
-func InitializeResult(cat durable.Catalog, clientProtocolVersion int, methods []ACPAuthMethod, logout bool) map[string]any {
+func InitializeResult(agent tacklr.AgentOptions, clientProtocolVersion int, methods []ACPAuthMethod, logout bool) map[string]any {
 	image := false
-	if cat != nil {
-		if spec, ok := cat.Lookup(""); ok && spec.Options.Model != nil {
-			image = spec.Options.Model.SupportsMIME("image/png")
-		}
+	if agent.Model != nil {
+		image = agent.Model.SupportsMIME("image/png")
 	}
 	_ = clientProtocolVersion
 	authMethods := make([]map[string]any, 0, len(methods))

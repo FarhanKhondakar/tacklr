@@ -20,16 +20,14 @@ type Session struct {
 // StartSession registers opts as the default catalog agent and creates a session.
 func StartSession(t testing.TB, opts tacklr.AgentOptions) *Session {
 	t.Helper()
-	if opts.Config.MaxWindowSize == 0 {
-		opts.Config.MaxWindowSize = 8192
+	if opts.MaxWindowSize == 0 {
+		opts.MaxWindowSize = 8192
 	}
 	sessionID := durable.SessionID(opts.SessionID)
 	opts.SessionID = ""
 	opts.MountSession = nil
-	cat := durable.NewCatalog("default")
-	cat.Register("default", durable.AgentSpec{Options: opts})
-	rt := Runtime(t, cat)
-	id, err := rt.CreateSession(t.Context(), durable.CreateSession{AgentID: "default", SessionID: sessionID})
+	rt := Runtime(t, opts)
+	id, err := rt.CreateSession(t.Context(), durable.CreateSession{SessionID: sessionID})
 	if err != nil {
 		t.Fatal(err)
 	}

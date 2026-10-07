@@ -186,19 +186,11 @@ func (p *acpProtocol) createSession(ctx context.Context, env server.ProtocolEnv,
 	if err := authorizeOperation(ctx, env, actionSessionCreate, ""); err != nil {
 		return "", nil, err
 	}
-	defaultAgent := ""
-	if env.Catalog != nil {
-		defaultAgent = env.Catalog.DefaultID()
-	}
-	cfg := map[string]string{}
-	if defaultAgent != "" {
-		cfg["agent"] = defaultAgent
-	}
 	sessionID := uuid.NewString()
 	sess := &acpWireSession{
 		cwd:          pr.CWD,
 		mcpServers:   pr.MCPServers,
-		configValues: cfg,
+		configValues: map[string]string{},
 		owner:        securitySubject(env),
 	}
 	p.mu.Lock()
@@ -206,7 +198,6 @@ func (p *acpProtocol) createSession(ctx context.Context, env server.ProtocolEnv,
 	p.mu.Unlock()
 	telemetry.MustInstruments(telemetry.Meter()).RecordSessionCreated(ctx)
 	if _, err := env.Runtime.CreateSession(ctx, durable.CreateSession{
-		AgentID:    defaultAgent,
 		SessionID:  durable.SessionID(sessionID),
 		MCPServers: pr.MCPServers,
 	}); err != nil {
@@ -215,10 +206,8 @@ func (p *acpProtocol) createSession(ctx context.Context, env server.ProtocolEnv,
 	if err := p.persistWire(ctx, sessionID, sess); err != nil {
 		return "", nil, err
 	}
-	opts := catalogConfigOptions(env.Catalog, defaultAgent)
 	return sessionID, map[string]any{
-		"sessionId":     sessionID,
-		"configOptions": opts,
+		"sessionId": sessionID,
 	}, nil
 }
 
@@ -239,32 +228,24 @@ func (p *acpProtocol) loadSession(ctx context.Context, env server.ProtocolEnv, p
 	if len(pr.MCPServers) > 0 {
 		sess.mcpServers = pr.MCPServers
 	}
-	agent := sess.configValues["agent"]
 	sess.mu.Unlock()
 	if err := p.persistWire(ctx, sessionID, sess); err != nil {
 		return nil, err
 	}
-	if agent == "" && env.Catalog != nil {
-		agent = env.Catalog.DefaultID()
-	}
 	_, err = env.Runtime.CreateSession(ctx, durable.CreateSession{
-		AgentID:    agent,
 		SessionID:  durable.SessionID(sessionID),
 		MCPServers: sess.mcpServers,
 	})
 	if err != nil && !errors.Is(err, durable.ErrSessionExists) {
 		return nil, err
 	}
-	opts := catalogConfigOptions(env.Catalog, agent)
 	return map[string]any{
-		"sessionId":     sessionID,
-		"configOptions": opts,
+		"sessionId": sessionID,
 	}, nil
 }
 
 // turnRequest is bindTurn output: one prompt or resume against Runtime.
 type turnRequest struct {
-	AgentID     string
 	ThreadID    string
 	Prompt      string
 	UserMessage *tacklr.Message
@@ -291,28 +272,12 @@ func (p *acpProtocol) bindTurn(ctx context.Context, env server.ProtocolEnv, pr *
 	} else {
 		mcpServers = sess.mcpServers
 	}
-	agentID := sess.configValues["agent"]
 	sess.mu.Unlock()
 
-	if agentID == "" && env.Catalog != nil {
-		agentID = env.Catalog.DefaultID()
-	}
-	if agentID == "" {
-		return turnRequest{}, server.Errorf(server.ErrInvalidRequest, "no agent configured for session and no default agent configured")
-	}
-	// Reject binary content the agent model cannot accept before the turn starts.
 	if pr.UserMessage != nil {
-		if mimes := pr.UserMessage.MIMETypes(); len(mimes) > 0 {
-			var model tacklr.InferenceStrategy
-			if env.Catalog != nil {
-				if spec, ok := env.Catalog.Lookup(agentID); ok {
-					model = spec.Options.Model
-				}
-			}
-			if model != nil {
-				if bad := tacklr.UnsupportedMIMEs(model, mimes); len(bad) > 0 {
-					return turnRequest{}, server.Errorf(server.ErrInvalidRequest, "unsupported content type(s): %s", strings.Join(bad, ", "))
-				}
+		if mimes := pr.UserMessage.MIMETypes(); len(mimes) > 0 && env.Agent.Model != nil {
+			if bad := tacklr.UnsupportedMIMEs(env.Agent.Model, mimes); len(bad) > 0 {
+				return turnRequest{}, server.Errorf(server.ErrInvalidRequest, "unsupported content type(s): %s", strings.Join(bad, ", "))
 			}
 		}
 	}
@@ -321,7 +286,6 @@ func (p *acpProtocol) bindTurn(ctx context.Context, env server.ProtocolEnv, pr *
 	}
 
 	return turnRequest{
-		AgentID:     agentID,
 		ThreadID:    sessionID,
 		Prompt:      pr.Prompt,
 		UserMessage: pr.UserMessage,
@@ -345,63 +309,11 @@ func (p *acpProtocol) closeSession(ctx context.Context, env server.ProtocolEnv, 
 	return nil
 }
 
-func (p *acpProtocol) setConfig(ctx context.Context, env server.ProtocolEnv, sessionID, configID, value string) (any, error) {
-	sess, err := p.resolveOwnedWireSession(ctx, env, sessionID, actionSessionConfig)
-	if err != nil {
+func (p *acpProtocol) setConfig(ctx context.Context, env server.ProtocolEnv, sessionID, configID, _ string) (any, error) {
+	if _, err := p.resolveOwnedWireSession(ctx, env, sessionID, actionSessionConfig); err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	if configID != "model" {
-		sess.mu.Unlock()
-		return nil, server.Errorf(server.ErrInvalidRequest, "unknown configId %q", configID)
-	}
-	ok := env.Catalog != nil
-	if ok {
-		_, ok = env.Catalog.Lookup(value)
-	}
-	if !ok {
-		sess.mu.Unlock()
-		return nil, server.Errorf(server.ErrAgentNotFound, "agent %q not found", value)
-	}
-	sess.configValues["agent"] = value
-	agent := sess.configValues["agent"]
-	sess.mu.Unlock()
-	if err := p.persistWire(ctx, sessionID, sess); err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"configOptions": catalogConfigOptions(env.Catalog, agent),
-	}, nil
-}
-
-func catalogConfigOptions(cat durable.Catalog, currentAgent string) []ConfigOption {
-	if cat == nil {
-		return nil
-	}
-	if currentAgent == "" {
-		currentAgent = cat.DefaultID()
-	}
-	ids := cat.IDs()
-	opts := make([]ConfigOptionValue, 0, len(ids))
-	for _, id := range ids {
-		spec, _ := cat.Lookup(id)
-		name := spec.Name
-		if name == "" {
-			name = id
-		}
-		opts = append(opts, ConfigOptionValue{Value: id, Name: name})
-	}
-	return []ConfigOption{
-		{
-			ID:           "model",
-			Name:         "Agent",
-			Description:  "Select which registered agent handles this session",
-			Category:     "model",
-			Type:         "select",
-			CurrentValue: currentAgent,
-			Options:      opts,
-		},
-	}
+	return nil, server.Errorf(server.ErrInvalidRequest, "unknown configId %q", configID)
 }
 
 const (

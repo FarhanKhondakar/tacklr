@@ -4,7 +4,7 @@
 //
 //   - Tree / At / Union / OpenVFS — host builds one /workspace tree per turn
 //     (agent-visible). Union merges Opens at one alias. Skill catalogs use a
-//     second host-only Tree (AgentSpec.OpenSkills); they are not a workspace member.
+//     second host-only Tree (AgentOptions.OpenSkills); they are not a workspace member.
 //   - MountSession — path I/O, ReadText / WriteDocument, ReadLines, FuseMount / Close, HostDir
 //   - FuseAvailable — process can mount a kernel tree (/dev/fuse or /dev/macfuse*)
 //   - ContentRev / ContentHash — session-visible content identity (for tools)

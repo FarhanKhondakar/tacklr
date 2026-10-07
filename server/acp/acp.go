@@ -42,21 +42,6 @@ func stopReasonFromError(err error) (reason string, ok bool) {
 	}
 }
 
-func stopReasonFromText(msg string) (reason string, ok bool) {
-	switch {
-	case msg == context.Canceled.Error():
-		return stopReasonCancelled, true
-	case strings.Contains(msg, tacklr.ErrModelRefused.Error()):
-		return stopReasonRefusal, true
-	case strings.Contains(msg, tacklr.ErrMaxTokens.Error()):
-		return stopReasonMaxTokens, true
-	case strings.Contains(msg, tacklr.ErrMaxTurnRequests.Error()):
-		return stopReasonMaxTurnRequests, true
-	default:
-		return "", false
-	}
-}
-
 func acpPromptResult(stopReason string) map[string]string {
 	return map[string]string{"stopReason": stopReason}
 }
@@ -391,12 +376,6 @@ func presentationToACP(threadID string, ev tacklr.StreamEvent) [][]byte {
 			})
 			return [][]byte{b}
 		}
-		if reason, ok := stopReasonFromText(presented.ErrorText); ok {
-			b, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0", "id": presented.TurnID, "result": acpPromptResult(reason),
-			})
-			return [][]byte{b}
-		}
 		msg := presented.ErrorText
 		if msg == "" {
 			msg = "internal error"
@@ -503,7 +482,6 @@ type ConfigOptionValue struct {
 // parsedRequest is retained for ACP parse helpers and tests that assert on
 // validated request fields.
 type parsedRequest struct {
-	AgentID  string
 	ThreadID string
 	Prompt   string
 	// UserMessage is set for multimodal ACP prompts (Content + ContentParts).

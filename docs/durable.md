@@ -9,7 +9,7 @@ Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frame
 | **Session** | Long-lived wait loop (`CreateSession` … `Close`) |
 | **Turn** | One `Prompt` or `Resume` until complete or park |
 | **TurnManager** | Per-turn mind: infer, tool batch, snapshot. Runtime constructs it for each Prompt/Resume |
-| **Specialist** | Catalog nested agent (`spawn_specialist`). Not a Temporal worker process |
+| **Specialist** | Assistant defined on the one agent (`spawn_specialist`). Not a Temporal worker process |
 | **Child** | Nested session job. Agent tools `list_children` / `cancel_child` |
 | **Park** | Session idle waiting for `Resume`. Parent-facing `Status` stays `running`; `Waiting` is true until the interrupt is resolved. Parent park does not stop children |
 | **Cancel** | Abort the in-flight turn and stop child sessions (`Runtime.Cancel`, original Prompt/Resume context cancel, client stop). The parent session stays open for a later Prompt |
@@ -20,22 +20,19 @@ Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frame
 
 The host API is `durable.Runtime`, implemented by `temporal.New`. `TurnManager` is not a host type.
 
-Host tools on `AgentSpec.Options.Tools` close over their clients at catalog register. That closure is the client for every later turn. Rebuild the tool if the client must change. See [tools.md](tools.md).
+Host tools on `AgentOptions.Tools` close over their clients when the host builds the agent. That closure is the client for every later turn. Rebuild the tool if the client must change. See [tools.md](tools.md).
 
 ## Session
 
 ```go
-cat := durable.NewCatalog("agent")
-cat.Register("agent", durable.AgentSpec{Options: opts})
 cfg := tacklrtemporal.Config{
-	Catalog:   cat,
+	Agent:     opts,
 	Snapshots: snaps,
 	Secrets:   secrets,
 }
 rt := tacklrtemporal.New(c, cfg)
 id, _ := rt.CreateSession(ctx, durable.CreateSession{
-	AgentID: "agent",
-	State:   map[string]any{"user": "Ada", "company": "Acme"},
+	State: map[string]any{"user": "Ada", "company": "Acme"},
 })
 _ = rt.Prompt(ctx, id, durable.Prompt{Text: prompt, Auth: auth})
 sub, _ := rt.Subscribe(ctx, id, 0)
@@ -53,7 +50,7 @@ One Temporal workflow per session runs the turn. HITL parks that workflow until 
 
 Queued messages are appended only when the window is safe: no unpaired (including leftover) tool calls and not parked. Both wait loops use that gate, then `tacklr.Next`. They never append while `Invoke` is running or between a `function_call` and its result. A drain that writes messages forces another inference instead of complete.
 
-`Prompt.Auth` and `Prompt.State` apply immediately (tokens and `userState` must not wait). `AgentID` / `MCPServers` apply on the next idle construct, not the live harness.
+`Prompt.Auth` and `Prompt.State` apply immediately (tokens and `userState` must not wait). `MCPServers` apply on the next idle construct, not the live harness.
 
 `session/cancel` (`Runtime.Cancel`) remains the abort path: it cancels the turn, stops children, and **drops unread inbox items**. Close drops the inbox. Resume does not start from a queued Prompt; HITL stays parked until Resume leftover tools finish, then the inbox drains.
 
@@ -69,7 +66,7 @@ The host runs:
 ```go
 c, err := tacklrtemporal.Dial(client.Options{HostPort: temporalHost})
 cfg := tacklrtemporal.Config{
-	Catalog:    cat,
+	Agent:      agent,
 	Snapshots:  snaps,   // session record
 	Secrets:    secrets, // VFS tokens; shared with the worker
 	Projection: vfs.DirectProjection{},
@@ -82,7 +79,7 @@ rt := tacklrtemporal.New(c, cfg)
 | Tacklr concept | Temporal |
 |----------------|----------|
 | Agent session | One workflow (`SessionWorkflow`) |
-| Harness loop | Workflow function |
+| Harness loop | `durable.Session` (`temporal` only runs steps, signals, and child workflows) |
 | Inference / tool | Activities (`Inference`, `Tool`) |
 | Specialist | Child workflow |
 | Turn locality | `Config.TurnLocality` keeps the turn’s activities on one Temporal worker. Zero (default) does not pin them. |
@@ -174,7 +171,7 @@ Encrypt remaining work-item payloads (prompt text, tool args, HITL bytes) at res
 `server.Protocol` is the host extension point. ACP’s built-in remote transport is WebSocket on `GET /acp` (JSON-RPC both ways). Hosts may add their own HTTP routes. Map each `StreamEvent` to wire frames in `OnStreamEvent`, and call `server.RunTurn` to pump `Runtime.Subscribe`:
 
 ```go
-srv := server.NewServer(rt, cat, acp.New(wire), myProtocol{})
+srv := server.NewServer(rt, agent, acp.New(wire), myProtocol{})
 ```
 
 A protocol is the handshake: create a session, start a turn, stream `StreamEvent`, end a turn, return HITL answers. Map wire auth into `AuthContext`. Hosts that persist ACP wire envelopes in Postgres call `PostgresWireStore.Setup`.
@@ -196,7 +193,7 @@ Three stores. Do not add a fourth. Do not copy a field from one into another exc
 
 | Plane | Lifetime | Owns | Never |
 |-------|----------|------|-------|
-| **SnapshotStore** | One Runtime session | Window, plan, parked interrupt, host `userState`, VFS recipes, identity (`AgentID`, `Parent`, `Specialist`, child ids) | Tokens, file bytes, leftover unstarted Temporal tool calls, MCP env/headers, child workflow futures |
+| **SnapshotStore** | One Runtime session | Window, plan, parked interrupt, host `userState`, VFS recipes, parent, specialist, child ids | Tokens, file bytes, leftover unstarted Temporal tool calls, MCP env/headers, child workflow futures |
 | **Wait loop** | In-process `sessionProc` / Temporal workflow replay | Leftover unstarted Temporal batch calls, MCP Durable topology, child futures, Prompt/job inbox (steer + auto-collected jobs), secret-free `ApplyAuth` on the current signal, `Status` | Window, plan, tokens, file bytes. `userState` after the first snapshot save of the slice. Inbox is not SnapshotStore. |
 | **SecretStorage** | Session, deleted on Close | VFS credentials | Snapshot rows, Temporal payloads |
 
@@ -225,14 +222,9 @@ Do not put Temporal `workflow.Context` on `durable.Runtime`.
 
 ## Observability
 
-The wait loop (in-process goroutine or `SessionWorkflow`) starts `tacklr.turn`. Inference and Tool activities inherit that span through Temporal OpenTelemetry v2 header propagation. Do not add extra activity wrapper spans.
+The session loop starts `tacklr.turn`. Inference and tool steps inherit that span. Do not add extra wrapper spans around a step.
 
-| Runtime | How the turn span starts |
-|---------|--------------------------|
-| In-process | wait loop calls `telemetry.StartTurnSpan` |
-| Temporal | `temporalotel.Tracer` inside `SessionWorkflow` |
-
-Host setup: `telemetry.Init` installs the process-wide ReplaySafe tracer (and OTLP exporters when an endpoint is set). `Dial` prepends Temporal’s official OpenTelemetry v2 plugin onto that global provider. Postgres Query/Exec spans join that same trace because `postgres.Store` / `PostgresWireStore` run otelpgx against the caller context.
+Host setup: `telemetry.Init` installs the process-wide OpenTelemetry providers and, when an endpoint is set, the OTLP exporters. `Dial` replaces the tracer with a replay-safe one that keeps that export configuration, then prepends Temporal’s OpenTelemetry plugin. Postgres Query/Exec spans join the same trace because `postgres.Store` and `PostgresWireStore` run otelpgx against the caller context.
 
 ```go
 shutdown, err := telemetry.Init(ctx, telemetry.Config{

@@ -18,7 +18,7 @@ type unionProvider struct {
 }
 
 // Union merges backends into one read-only Open. Skill packs use
-// AgentSpec.OpenSkills: Tree(At("skills", Union(...))).
+// AgentOptions.OpenSkills: Tree(At("skills", Union(...))).
 func Union(opens ...Open) Open {
 	return func(ctx context.Context, sessionID string, b Binding) (Provider, error) {
 		if err := ctx.Err(); err != nil {

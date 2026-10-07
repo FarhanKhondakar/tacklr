@@ -524,12 +524,10 @@ func TestRun_workspaceResearchTurn(t *testing.T) {
 	}
 
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID: "research-turn",
-		Config: Config{
-			MaxWindowSize:   400,
-			SystemPrompt:    "You are a research agent. Prefer tools over guessing.",
-			MaxTurnRequests: 20,
-		},
+		SessionID:       "research-turn",
+		MaxWindowSize:   400,
+		SystemPrompt:    "You are a research agent. Prefer tools over guessing.",
+		MaxTurnRequests: 20,
 		ContextPolicy:   ContextPolicy{PressureRatio: 0.6, CompressFraction: 0.5},
 		WatchDog:        wd,
 		MountSession:    ms,

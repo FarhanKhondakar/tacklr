@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 
+	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/durable/temporal"
 	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
@@ -28,7 +29,7 @@ func trace(t testing.TB) {
 }
 
 // Runtime starts a worker against the shared Temporal Docker server.
-func Runtime(t testing.TB, cat *durable.MemoryCatalog) durable.Runtime {
+func Runtime(t testing.TB, agent tacklr.AgentOptions) durable.Runtime {
 	t.Helper()
 	trace(t)
 	c, err := temporal.Dial(client.Options{HostPort: temporaldocker.HostPort(t)})
@@ -37,7 +38,7 @@ func Runtime(t testing.TB, cat *durable.MemoryCatalog) durable.Runtime {
 	}
 	t.Cleanup(c.Close)
 	cfg := temporal.Config{
-		Catalog:        cat,
+		Agent:          agent,
 		TaskQueue:      "tacklr-" + uuid.NewString(),
 		Snapshots:      durable.NewMemorySnapshot(),
 		Fallback:       durable.NewMemoryEventLog(),

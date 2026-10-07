@@ -12,7 +12,6 @@ import (
 	"github.com/ryanaldo34/tacklr/server/acp"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -22,8 +21,7 @@ func TestACP_vfsBindRefreshUnbind(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("from-workspace"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	strategy := &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 			if n := len(msgs); n > 0 {
 				last := msgs[n-1]
 				if last != nil && last.Role == tacklr.RoleTool {
@@ -39,9 +37,8 @@ func TestACP_vfsBindRefreshUnbind(t *testing.T) {
 				}},
 				IsComplete: true,
 			}
-		},
-	}
-	r := newTestRuntime(t, strategy, durable.AgentSpec{OpenVFS: func(ctx context.Context, sid string, req vfs.Request) (*vfs.MountSession, error) {
+		})
+	r := newTestRuntime(t, strategy, tacklr.AgentOptions{OpenVFS: func(ctx context.Context, sid string, req vfs.Request) (*vfs.MountSession, error) {
 		if _, ok := vfs.BindingByName(req.Bindings, "docs"); !ok {
 			if _, ok := vfs.BindingByName(req.Bindings, "local"); !ok {
 				return vfs.Tree()(ctx, sid, req)
@@ -57,7 +54,7 @@ func TestACP_vfsBindRefreshUnbind(t *testing.T) {
 	bridge := acp.NewClientBridge(w)
 	bridge.SetCaps(acp.ClientCapabilities{VFSTokenRefresh: true})
 	proto := acpProtocolFor(r)
-	env := server.ProtocolEnv{Runtime: r.Runtime, Catalog: r.Catalog, Conn: &server.Conn{Writer: w, Ask: bridge}}
+	env := server.ProtocolEnv{Runtime: r.Runtime, Agent: r.Agent, Conn: &server.Conn{Writer: w, Ask: bridge}}
 	bind := `{"jsonrpc":"2.0","id":2,"method":"_tacklr/vfs/bind","params":{"sessionId":"` + sessionID + `","backends":[{"provider":"local","params":{"name":"docs"},"auth":{"token":"tok1"}}]}}`
 	if err := proto.HandleInbound(t.Context(), env, []byte(bind)); err != nil {
 		t.Fatal(err)

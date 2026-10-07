@@ -8,15 +8,17 @@ import (
 )
 
 const (
-	signalPrompt = "Prompt"
-	signalResume = "Resume"
-	signalCancel = "Cancel"
-	signalClose  = "Close"
+	signalPrompt = durable.WakePrompt
+	signalResume = durable.WakeResume
+	signalCancel = durable.WakeCancel
+	signalClose  = durable.WakeClose
 
 	queryStatus   = "tacklr_status"
 	queryChildren = "tacklr_children"
 
-	signalChildWaiting = "ChildWaiting"
+	// signalChildWaiting only wakes a parent whose child has parked.
+	// It is not a session wake.
+	signalChildWaiting = "child-waiting"
 )
 
 // workflowInput is wait-loop start state (scheduler), not a Snapshot.
@@ -24,7 +26,6 @@ const (
 // checkpoint on the first activity save.
 type workflowInput struct {
 	SessionID  durable.SessionID
-	AgentID    string
 	MCPServers []mcp.MCPConfig
 	Mounts     []durable.MountRecipe
 	// TurnLocalityTimeout, when > 0, pins the turn's activities to one worker
@@ -32,7 +33,7 @@ type workflowInput struct {
 	// on any worker. There is no default timeout.
 	TurnLocalityTimeout time.Duration
 	// ActivityTimeout is StartToCloseTimeout for Inference/Tool activities.
-	// Zero means 10 minutes (resolveActivityTimeout).
+	// Zero means 10 minutes.
 	ActivityTimeout time.Duration
 	// HeartbeatTimeout is the activity heartbeat timeout. Zero means 30 seconds.
 	HeartbeatTimeout time.Duration
@@ -47,10 +48,4 @@ type workflowInput struct {
 	// State is CreateSession.State, already JSON-roundtripped. Overlay onto
 	// the checkpoint; not a durable workflow copy of userState.
 	State map[string]any
-}
-
-type waitSignal struct {
-	kind   string
-	prompt durable.PromptIn
-	resume durable.ResumeIn
 }

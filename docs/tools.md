@@ -18,7 +18,7 @@ func NewSearchRecordsTool(store RecordStore) *tacklr.Tool {
 }
 ```
 
-Register the result on `AgentOptions.Tools`. Catalog register time is when the closure is formed. Rebuild the `*Tool` if you need a different client.
+Register the result on `AgentOptions.Tools`. The closure is formed when the host builds the agent. Rebuild the `*Tool` if you need a different client.
 
 ### Tests
 
@@ -65,7 +65,7 @@ These still inject when the turn’s world is present. They close over per-turn 
 | You set | Tools that close over it |
 |---------|--------------------------|
 | `MountSession` | `read`, `write`, `write_document`, `write_spreadsheet`, `run_command` |
-| `SkillsSession` (`AgentSpec.OpenSkills`) | `read_skill` |
+| `SkillsSession` (`AgentOptions.OpenSkills`) | `read_skill` |
 | `Brain` | `search`, `find_exact`, `read_object`, `schema`, `save_*`, `link`, `expand`, … |
 | Brain + VFS + namespace (index bridge) | `index_file`, `unindex` |
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr"
+	"github.com/ryanaldo34/tacklr/internal/testhttp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 )
 
@@ -776,12 +777,20 @@ func collectSSE(t *testing.T, body string) []tacklr.LLMResponseChunk {
 		body = strings.Replace(body, "data: [DONE]",
 			`data: {"type":"response.completed","response":{"status":"completed"}}`+"\n"+`data: [DONE]`, 1)
 	}
-	s := NewOpenAIInferenceStrategy(nil)
-	ch := make(chan tacklr.LLMResponseChunk, 64)
-	go func() {
-		s.parseSSEResponse(context.Background(), strings.NewReader(body), ch, "")
-		close(ch)
-	}()
+	srv := testhttp.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/input_tokens") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"input_tokens":1}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, body)
+	}))
+	s := NewOpenAIInferenceStrategy(srv.Client()).WithApiKey("test-key").WithModel("gpt-4o").WithURL(srv.URL)
+	ch, err := s.Invoke(context.Background(), []*tacklr.Message{{Role: tacklr.RoleUser, Content: "hi"}}, nil, "")
+	if err != nil {
+		return []tacklr.LLMResponseChunk{{Type: tacklr.StreamEventError, Error: err, Content: err.Error(), IsComplete: true}}
+	}
 	var out []tacklr.LLMResponseChunk
 	for c := range ch {
 		out = append(out, c)

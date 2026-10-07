@@ -5,6 +5,7 @@
 package temporal
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,11 +14,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"go.temporal.io/sdk/client"
 	temporalotel "go.temporal.io/sdk/contrib/opentelemetry-v2"
 	"go.temporal.io/sdk/contrib/workflowstreams"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/worker"
+
+	"github.com/ryanaldo34/tacklr/telemetry"
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
@@ -30,7 +36,7 @@ import (
 type Runtime struct {
 	client              client.Client
 	taskQueue           string
-	catalog             durable.Catalog
+	agent               tacklr.AgentOptions
 	fallback            durable.EventLog
 	snapshots           durable.SnapshotStore
 	disableStreams      bool
@@ -51,30 +57,11 @@ const (
 	defaultActivityAttempts = 3
 )
 
-func resolveActivityTimeout(d time.Duration) time.Duration {
-	if d <= 0 {
-		return defaultActivityTimeout
-	}
-	return d
-}
-
-func resolveHeartbeatTimeout(d time.Duration) time.Duration {
-	if d <= 0 {
-		return defaultHeartbeatTimeout
-	}
-	return d
-}
-
-func resolveActivityAttempts(n int32) int32 {
-	if n <= 0 {
-		return defaultActivityAttempts
-	}
-	return n
-}
-
 // Config is the single Temporal host config for New and NewWorker.
 type Config struct {
-	Catalog   durable.Catalog
+	// Agent is the one agent this worker runs. Specialists on Agent.Options
+	// are assistants it can spawn. Jobs are named handlers, not agents.
+	Agent     tacklr.AgentOptions
 	TaskQueue string
 	// Snapshots is the session record. Required. New and NewWorker must share
 	// the same instance. Tokens never go here.
@@ -109,8 +96,9 @@ func (c Config) queue() string {
 }
 
 func requireCfg(cfg Config) {
-	if cfg.Catalog == nil {
-		panic("temporal: Catalog is required")
+	opts := cfg.Agent
+	if opts.SessionID != "" || opts.MountSession != nil || opts.SkillsSession != nil {
+		panic("temporal: Agent cannot set SessionID, MountSession, or SkillsSession; the runtime injects those per turn")
 	}
 	if cfg.Snapshots == nil {
 		panic("temporal: Snapshots is required")
@@ -137,14 +125,14 @@ func New(c client.Client, cfg Config) *Runtime {
 	return &Runtime{
 		client:              c,
 		taskQueue:           cfg.queue(),
-		catalog:             cfg.Catalog,
+		agent:               cfg.Agent,
 		fallback:            cfg.eventLog(),
 		snapshots:           cfg.Snapshots,
 		disableStreams:      cfg.DisableStreams,
 		turnLocalityTimeout: cfg.TurnLocality,
-		activityTimeout:     resolveActivityTimeout(cfg.ActivityTimeout),
-		heartbeatTimeout:    resolveHeartbeatTimeout(cfg.HeartbeatTimeout),
-		activityAttempts:    resolveActivityAttempts(cfg.ActivityAttempts),
+		activityTimeout:     cmp.Or(cfg.ActivityTimeout, defaultActivityTimeout),
+		heartbeatTimeout:    cmp.Or(cfg.HeartbeatTimeout, defaultHeartbeatTimeout),
+		activityAttempts:    cmp.Or(cfg.ActivityAttempts, defaultActivityAttempts),
 		secrets:             cfg.Secrets,
 		jobs:                cfg.Jobs,
 		closed:              make(map[durable.SessionID]struct{}),
@@ -153,15 +141,6 @@ func New(c client.Client, cfg Config) *Runtime {
 
 // CreateSession implements durable.Runtime.
 func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) (durable.SessionID, error) {
-	agentID := req.AgentID
-	if agentID == "" {
-		agentID = r.catalog.DefaultID()
-	}
-	if agentID != "" {
-		if _, ok := r.catalog.Lookup(agentID); !ok {
-			return "", fmt.Errorf("%w: %s", durable.ErrAgentNotFound, agentID)
-		}
-	}
 	if req.Worker != "" && req.Specialist != "" {
 		return "", fmt.Errorf("specialist and worker are exclusive: %w", tacklr.ErrInvalid)
 	}
@@ -183,7 +162,6 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 		TaskQueue: r.taskQueue,
 	}, SessionWorkflow, workflowInput{
 		SessionID:           id,
-		AgentID:             agentID,
 		MCPServers:          mcp.DurableConfigs(req.MCPServers),
 		Mounts:              req.Mounts,
 		TurnLocalityTimeout: r.turnLocalityTimeout,
@@ -235,7 +213,6 @@ func (r *Runtime) Prompt(ctx context.Context, sessionID durable.SessionID, msg d
 	return r.signal(ctx, sessionID, signalPrompt, durable.PromptIn{
 		Text:        msg.Text,
 		UserMessage: msg.UserMessage,
-		AgentID:     msg.AgentID,
 		MCPServers:  mcp.DurableConfigs(msg.MCPServers),
 		Auth:        msg.Auth.WithoutSecrets(),
 		State:       encoded,
@@ -269,25 +246,14 @@ func (r *Runtime) Close(ctx context.Context, sessionID durable.SessionID) error 
 	r.markClosed(sessionID)
 	_ = r.signal(ctx, sessionID, signalClose, nil)
 	for _, k := range kids {
-		deleteSessionMessages(ctx, r.catalog, r.snapshots, k)
+		durable.DeleteSessionMessages(ctx, r.agent, k)
 		_ = r.secrets.Delete(ctx, k)
 	}
-	deleteSessionMessages(ctx, r.catalog, r.snapshots, sessionID)
+	durable.DeleteSessionMessages(ctx, r.agent, sessionID)
 	_ = r.secrets.Delete(ctx, sessionID)
 	_ = r.snapshots.Delete(ctx, sessionID)
 	_ = r.fallback.CloseSession(ctx, sessionID)
 	return nil
-}
-
-func deleteSessionMessages(ctx context.Context, cat durable.Catalog, snaps durable.SnapshotStore, id durable.SessionID) {
-	if snaps == nil {
-		return
-	}
-	snap, _, err := snaps.Load(ctx, id)
-	if err != nil {
-		return
-	}
-	durable.DeleteSessionMessages(ctx, cat, snap.AgentID, id)
 }
 
 type sub struct {
@@ -322,11 +288,20 @@ func (r *Runtime) Head(ctx context.Context, sessionID durable.SessionID) (durabl
 func (r *Runtime) Subscribe(ctx context.Context, sessionID durable.SessionID, after durable.Seq) (durable.Subscription, error) {
 	subCtx, cancel := context.WithCancel(ctx)
 	if r.disableStreams {
-		ch, err := r.fallback.Subscribe(subCtx, sessionID, after)
+		src, err := r.fallback.Subscribe(subCtx, sessionID, after)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
+		ch := make(chan tacklr.StreamEvent)
+		go func() {
+			defer close(ch)
+			for ev := range src {
+				if !deliver(subCtx, ch, ev) {
+					return
+				}
+			}
+		}()
 		return &sub{ch: ch, cancel: cancel}, nil
 	}
 	c := workflowstreams.NewClient(r.client, string(sessionID), workflowstreams.Options{})
@@ -347,17 +322,24 @@ func (r *Runtime) Subscribe(ctx context.Context, sessionID durable.SessionID, af
 			if err := dc.FromPayload(item.Data, &ev); err != nil {
 				return
 			}
-			if ev.Error == nil && ev.Fail != "" {
-				ev.Error = failFromWire(ev.Fail)
-			}
-			select {
-			case ch <- ev:
-			case <-subCtx.Done():
+			if !deliver(subCtx, ch, ev) {
 				return
 			}
 		}
 	}()
 	return &sub{ch: ch, cancel: cancel}, nil
+}
+
+func deliver(ctx context.Context, ch chan<- tacklr.StreamEvent, ev tacklr.StreamEvent) bool {
+	if ev.Error == nil && ev.Fail != "" {
+		ev.Error = failFromWire(ev.Fail)
+	}
+	select {
+	case ch <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func failFromWire(s string) error {
@@ -420,9 +402,23 @@ func (r *Runtime) Status(ctx context.Context, id durable.SessionID) (durable.Ses
 }
 
 // Dial is client.Dial with Temporal's OpenTelemetry v2 plugin prepended.
-// Call telemetry.Init first so the global TracerProvider is ReplaySafe.
+// It installs a replay-safe tracer on the process. When telemetry.Init has
+// already run, that tracer keeps the same export configuration.
 func Dial(opts client.Options) (client.Client, error) {
-	plugin, _ := temporalotel.NewPlugin(temporalotel.PluginOptions{})
+	if _, ok := otel.GetTracerProvider().(*temporalotel.ReplaySafeTracerProvider); !ok {
+		if !telemetry.TracerInstalled() {
+			otel.SetTracerProvider(temporalotel.NewReplaySafeTracerProvider())
+		} else if err := telemetry.ReinstallTracer(context.Background(), func(o ...sdktrace.TracerProviderOption) (trace.TracerProvider, func(context.Context) error) {
+			tp := temporalotel.NewReplaySafeTracerProvider(o...)
+			return tp, tp.Shutdown
+		}); err != nil {
+			return nil, err
+		}
+	}
+	plugin, err := temporalotel.NewPlugin(temporalotel.PluginOptions{})
+	if err != nil {
+		return nil, err
+	}
 	opts.Plugins = append([]client.Plugin{plugin}, opts.Plugins...)
 	return client.Dial(opts)
 }
@@ -442,7 +438,7 @@ func NewWorker(c client.Client, cfg Config) worker.Worker {
 	}
 	fallback := cfg.eventLog()
 	acts := &activities{
-		Catalog:        cfg.Catalog,
+		Agent:          cfg.Agent,
 		Snapshots:      cfg.Snapshots,
 		Projection:     proj,
 		Fallback:       fallback,

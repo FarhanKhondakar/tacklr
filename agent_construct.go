@@ -13,41 +13,25 @@ import (
 	"github.com/ryanaldo34/tacklr/vfsindex"
 )
 
-// Config is harness limits and prompt settings.
-type Config struct {
-	MaxWindowSize int
-	SystemPrompt  string
-	// MaxTurnRequests limits Model.Invoke calls per Run. 0 = unlimited.
-	// Exceeding the limit ends the turn with ErrMaxTurnRequests.
-	MaxTurnRequests int
-}
-
-// Validate checks host configuration that does not depend on a model.
-func (c Config) Validate() error {
-	if c.MaxWindowSize < 0 {
-		return fmt.Errorf("tacklr: Config.MaxWindowSize must be positive")
-	}
-	if c.MaxTurnRequests < 0 {
-		return fmt.Errorf("tacklr: Config.MaxTurnRequests must not be negative")
-	}
-	return nil
-}
-
-// AgentOptions configures NewTurnManager.
+// AgentOptions is the one agent, and the argument to NewTurnManager.
+// A durable runtime also uses OpenVFS and OpenSkills to build the trees for
+// each turn, then sets SessionID, MountSession, and SkillsSession.
 //
-// Usual fields: Config, Model, Tools, MCPConfigs, Specialists, SessionID.
-// ContextPolicy knobs (ratios, stream-summary) stay host-settable. Adaptive
-// Case Management itself is harness-owned and cannot be replaced.
-//
-// Conversation for durable.Runtime sessions lives on SnapshotStore.
-// Wire session envelopes (server.ProtocolWireStore) are a separate protocol
-// contract.
+// ContextPolicy knobs stay host-settable. Adaptive Case Management itself
+// is harness-owned and cannot be replaced.
 type AgentOptions struct {
-	Config Config
-	// SessionID is the durable thread id. Set at construction; do not change mid-turn.
+	// MaxWindowSize is the context window in tokens. Zero uses the model's
+	// reported window.
+	MaxWindowSize uint
+	SystemPrompt  string
+	// MaxTurnRequests limits Model.Invoke calls per turn. Zero means no limit.
+	MaxTurnRequests uint
+	// SessionID is the durable thread id. The runtime sets it per turn.
 	SessionID string
 	Model     InferenceStrategy
-	WatchDog  AgentWatchDog
+	// Name is the label used in logs. It does not select behavior.
+	Name     string
+	WatchDog AgentWatchDog
 	// Tools are host tools, including optional tools from email and web.
 	// Give each tool its clients by closing
 	// over them in the constructor (see NewTool). Session-world tools
@@ -73,12 +57,15 @@ type AgentOptions struct {
 	// SkillsLoader loads skills. When nil, SkillsSession is walked with
 	// skills.Loader. MountSession is never used for skills.
 	SkillsLoader skills.SkillLoader
-	// SkillsSession is the host-only skills tree for this turn. Runtime
-	// builds it from AgentSpec.OpenSkills. It is not session.VFS; VFS tools
-	// do not see it. Nil and a nil SkillsLoader means no skills.
+	// OpenSkills builds the host-only skills tree for each turn. Nil means
+	// no skills unless SkillsLoader is set. The workspace mount never
+	// includes this tree.
+	OpenSkills vfs.OpenVFS
+	// SkillsSession is that tree for this turn. The runtime sets it from
+	// OpenSkills. VFS tools do not see it.
 	SkillsSession *vfs.MountSession
-	// SkillsRoot is the virtual directory skills.Loader walks on
-	// SkillsSession. Empty means skills.DefaultRoot (/workspace/skills).
+	// SkillsRoot is the virtual directory skills.Loader walks. Empty means
+	// /workspace/skills.
 	SkillsRoot string
 	// Brain enables knowledge builtins when non-nil. Workers inherit the same engine.
 	// Configure Store, optional QueryEmbedder, and optional GraphReader/GraphWriter on the Engine
@@ -93,11 +80,11 @@ type AgentOptions struct {
 	// Each tool call may add attrs to narrow the search; it cannot change ceiling values.
 	// Empty means no ceiling. Workers get a copy at spawn.
 	SearchNamespace brain.Namespace
-	// MountSession is the agent /workspace tree for this turn, or nil (no VFS tools).
-	// Runtime builds one from OpenVFS plus Prompt.Auth bindings when a
-	// projection is available. Embedders pass their own. The injector Closes
-	// it after the turn; the harness never does (workers inherit the pointer).
-	// Do not mount skills here; use SkillsSession.
+	// OpenVFS builds the /workspace tree for each turn. Nil means no VFS.
+	OpenVFS vfs.OpenVFS
+	// MountSession is that tree for this turn. The runtime sets it from
+	// OpenVFS and the prompt's bindings. Embedders may pass their own.
+	// The injector closes it after the turn. Do not mount skills here.
 	MountSession *vfs.MountSession
 	// UnattendedRunCommand injects run_command without ToolPermissionOnCall.
 	// Default false: run_command parks for permission.
@@ -118,9 +105,9 @@ func NewTurnManager(ctx context.Context, opts AgentOptions) (*TurnManager, error
 	sm := newSessionManager()
 	h := &TurnManager{
 		model:                 opts.Model,
-		maxWindowSize:         opts.Config.MaxWindowSize,
-		maxTurnRequests:       opts.Config.MaxTurnRequests,
-		instructions:          opts.Config.SystemPrompt,
+		maxWindowSize:         int(opts.MaxWindowSize),
+		maxTurnRequests:       int(opts.MaxTurnRequests),
+		instructions:          opts.SystemPrompt,
 		session:               sm,
 		watchDog:              opts.WatchDog,
 		tools:                 opts.Tools,
@@ -173,18 +160,15 @@ func (opts *AgentOptions) Validate() error {
 	if opts.Model == nil {
 		return fmt.Errorf("tacklr: AgentOptions.Model is required")
 	}
-	if err := opts.Config.Validate(); err != nil {
-		return err
-	}
-	if opts.Config.MaxWindowSize == 0 {
+	if opts.MaxWindowSize == 0 {
 		size, err := opts.Model.MaxContextWindow()
 		if err != nil {
 			return fmt.Errorf("tacklr: resolve model context window: %w", err)
 		}
 		if size <= 0 {
-			return fmt.Errorf("tacklr: Config.MaxWindowSize is required when the model does not report a context window")
+			return fmt.Errorf("tacklr: MaxWindowSize is required when the model does not report a context window")
 		}
-		opts.Config.MaxWindowSize = size
+		opts.MaxWindowSize = uint(size)
 	}
 	if err := opts.ContextPolicy.Validate(); err != nil {
 		return err

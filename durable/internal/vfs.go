@@ -6,7 +6,7 @@ import (
 
 	"go.opentelemetry.io/otel/log"
 
-	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -32,23 +32,23 @@ func CloseTurnTrees(workspace, skills *vfs.MountSession) {
 	CloseTurnVFS(skills)
 }
 
-// OpenSkillsVFS builds the host-only skills MountSession from AgentSpec.OpenSkills.
+// OpenSkillsVFS builds the host-only skills MountSession from AgentOptions.OpenSkills.
 // It does not attach a FUSE projection. The agent never receives this session.
-func OpenSkillsVFS(ctx context.Context, threadID string, spec durable.AgentSpec) (*vfs.MountSession, error) {
-	if spec.OpenSkills == nil {
+func OpenSkillsVFS(ctx context.Context, threadID string, agent tacklr.AgentOptions) (*vfs.MountSession, error) {
+	if agent.OpenSkills == nil {
 		return nil, nil
 	}
-	return spec.OpenSkills(ctx, threadID, vfs.Request{})
+	return agent.OpenSkills(ctx, threadID, vfs.Request{})
 }
 
 // OpenTurnSessions opens the agent workspace and the host-only skills tree.
 // On OpenSkills failure the workspace session is closed.
-func OpenTurnSessions(ctx context.Context, threadID string, spec durable.AgentSpec, bindings []vfs.Binding, proj vfs.Projection) (workspace, skills *vfs.MountSession, err error) {
-	workspace, err = OpenTurnVFS(ctx, threadID, spec, bindings, proj)
+func OpenTurnSessions(ctx context.Context, threadID string, agent tacklr.AgentOptions, bindings []vfs.Binding, proj vfs.Projection) (workspace, skills *vfs.MountSession, err error) {
+	workspace, err = OpenTurnVFS(ctx, threadID, agent, bindings, proj)
 	if err != nil {
 		return nil, nil, err
 	}
-	skills, err = OpenSkillsVFS(ctx, threadID, spec)
+	skills, err = OpenSkillsVFS(ctx, threadID, agent)
 	if err != nil {
 		CloseTurnVFS(workspace)
 		return nil, nil, err
@@ -56,17 +56,17 @@ func OpenTurnSessions(ctx context.Context, threadID string, spec durable.AgentSp
 	return workspace, skills, nil
 }
 
-// OpenTurnVFS builds the turn-scoped MountSession from AgentSpec.OpenVFS.
+// OpenTurnVFS builds the turn-scoped MountSession from AgentOptions.OpenVFS.
 // Nil when OpenVFS is nil or the projection is unavailable.
-func OpenTurnVFS(ctx context.Context, threadID string, spec durable.AgentSpec, bindings []vfs.Binding, proj vfs.Projection) (*vfs.MountSession, error) {
-	if spec.OpenVFS == nil {
+func OpenTurnVFS(ctx context.Context, threadID string, agent tacklr.AgentOptions, bindings []vfs.Binding, proj vfs.Projection) (*vfs.MountSession, error) {
+	if agent.OpenVFS == nil {
 		return nil, nil
 	}
 	if proj == nil || !proj.Available() {
 		telemetry.InstrumentsFromContext(ctx).RecordFuseMount(ctx, telemetry.FuseMountOutcomeUnavailable)
 		return nil, nil
 	}
-	ms, err := spec.OpenVFS(ctx, threadID, vfs.Request{Bindings: bindings})
+	ms, err := agent.OpenVFS(ctx, threadID, vfs.Request{Bindings: bindings})
 	if err != nil {
 		return nil, err
 	}

@@ -16,9 +16,9 @@ func TestSystemPrompt_knowledgeGuidanceWhenBrainSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := mustNewTurnManager(t, AgentOptions{
-		Config: Config{MaxWindowSize: 8192},
-		Model:  &scriptedModel{},
-		Brain:  eng,
+		MaxWindowSize: 8192,
+		Model:         &scriptedModel{},
+		Brain:         eng,
 	})
 	t.Cleanup(h.Close)
 	prompt := h.constructSystemPrompt()
@@ -40,7 +40,7 @@ func TestHandoff_savesSessionMessagesForSearch(t *testing.T) {
 	)
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:       sessionID,
-		Config:          Config{MaxWindowSize: 8192},
+		MaxWindowSize:   8192,
 		SearchNamespace: ns,
 		Brain:           eng,
 		Model:           &scriptedModel{},
@@ -109,7 +109,7 @@ func TestAbsorb_retainsCompressedEpisode(t *testing.T) {
 	const token = "unique-retain-compress-token"
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:       "sess-compress",
-		Config:          Config{MaxWindowSize: 40},
+		MaxWindowSize:   40,
 		ContextPolicy:   ContextPolicy{PressureRatio: 0.5, CompressFraction: 0.5},
 		SearchNamespace: ns,
 		Brain:           eng,
@@ -142,7 +142,7 @@ func TestHandoff_sessionMessageSaveErrorKeepsWindow(t *testing.T) {
 	}
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:       "sess-save-fail",
-		Config:          Config{MaxWindowSize: 8192},
+		MaxWindowSize:   8192,
 		SearchNamespace: mustNS(t, "org", "acme"),
 		Brain:           eng,
 		Model:           &scriptedModel{},
@@ -169,9 +169,9 @@ func TestHandoff_sessionMessageSaveErrorKeepsWindow(t *testing.T) {
 
 func TestHandoff_nilBrainReplacesWindow(t *testing.T) {
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID: "sess-no-brain",
-		Config:    Config{MaxWindowSize: 8192},
-		Model:     &scriptedModel{},
+		SessionID:     "sess-no-brain",
+		MaxWindowSize: 8192,
+		Model:         &scriptedModel{},
 	})
 	t.Cleanup(h.Close)
 	h.context.Restore([]*Message{{Role: RoleUser, Content: "do the work"}})
@@ -209,7 +209,7 @@ func TestSpecialist_retainsResultEpisode(t *testing.T) {
 	const token = "unique-retain-specialist-token"
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:       "sess-spec",
-		Config:          Config{MaxWindowSize: 8192},
+		MaxWindowSize:   8192,
 		SearchNamespace: ns,
 		Brain:           eng,
 		Model:           &scriptedModel{},
@@ -263,8 +263,8 @@ type stubJobHost struct {
 	result string
 }
 
-func (s stubJobHost) RunSpecialist(context.Context, string, string, string) (string, error) {
-	return s.result, nil
+func (s stubJobHost) RunSpecialist(context.Context, string, string, string) (SpecialistResult, error) {
+	return SpecialistResult{Output: s.result}, nil
 }
 func (stubJobHost) Schedule(context.Context, JobRequest, string) (Job, error) {
 	return Job{}, nil

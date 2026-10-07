@@ -6,15 +6,15 @@ import (
 	"sync"
 )
 
-// Secrets is the session-scoped secret bag that must not enter Temporal
-// history or SnapshotStore. Auth holds VFS credentials. Add fields here when
+// Secrets is the session-scoped secret bag. It is not stored in the snapshot
+// or the durable history. Auth holds VFS credentials. Add fields here when
 // more work-item secrets need the same path.
 type Secrets struct {
 	Auth AuthContext
 }
 
-// SecretStorage holds Secrets for Temporal activities.
-// Runtime client and worker must share one instance. It is not SnapshotStore.
+// SecretStorage holds Secrets for the workers that run a turn.
+// The runtime client and the worker must share one instance. It is not SnapshotStore.
 type SecretStorage interface {
 	// Put replaces Auth when secrets.Auth.Bindings is non-empty.
 	// Empty Bindings (including drop-only) is a no-op on the bag.

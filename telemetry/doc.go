@@ -4,8 +4,7 @@
 // OpenTelemetry Collector → Tempo, Loki, Mimir/Prometheus, Grafana).
 //
 // Host API:
-//   - Config, Init — process-wide OTLP traces/metrics/logs with Temporal's
-//     ReplaySafe tracer provider. Call before durable/temporal.Dial.
+//   - Config, Init — process-wide OTLP traces, metrics, and logs.
 //   - MeterProviderFromPrometheusRegisterer — Prometheus scrape
 //   - DefaultResource — service resource
 //

@@ -40,7 +40,8 @@ var (
 
 // ErrNetwork is a transport failure: the dial, the read, a timeout, or an
 // upstream 408, 429, or 5xx. Wrap it at the call that hit the network.
-// Activities retry this error. Any other error stops on the first attempt.
+// The durable runtime retries a wrapped network error. Any other error
+// stops on the first attempt.
 var ErrNetwork = errors.New("network")
 
 type networkError struct{ error }
@@ -162,10 +163,11 @@ type HarnessRuntime interface {
 	Park(kind string, payload []byte) (Interrupt, error)
 	CurrentToolCallID() string
 
-	// RunSpecialist starts a nested specialist session and returns its result.
-	// The tool call stays open until the child completes. This is not a job:
-	// no inbox message, and the child is dropped when this returns.
-	RunSpecialist(ctx context.Context, name, task string) (string, error)
+	// RunSpecialist queues a blocking specialist session.
+	// WaitFor is the child session the caller must wait on. Output is the
+	// child's text when the host already finished that session. A host sets
+	// one of them. This is not a background job: no inbox message.
+	RunSpecialist(ctx context.Context, name, task string) (SpecialistResult, error)
 	// Schedule starts a job of this session. It does not wait.
 	// Name is a registered specialist or Runtime job worker. The result
 	// arrives later as an inbox message. Pass the id to Jobs or CancelJob.
@@ -176,16 +178,13 @@ type HarnessRuntime interface {
 	CancelJob(ctx context.Context, id string) error
 }
 
-// JobWaitError is returned by the Temporal JobHost so the Tool activity can
-// return without writing a tool result. The workflow waits on the child, then
-// RecordToolResult. In-process RunSpecialist blocks and never returns this.
-type JobWaitError struct{ ID string }
-
-func (e *JobWaitError) Error() string {
-	if e == nil || e.ID == "" {
-		return "wait for child"
-	}
-	return "wait for child " + e.ID
+// SpecialistResult is the outcome of a blocking specialist request.
+// WaitFor means the child session is not finished. The session loop waits
+// for that id, then records the tool result. Output is set when the child
+// already finished inside the call.
+type SpecialistResult struct {
+	Output  string
+	WaitFor string
 }
 
 // Interrupt types re-exported for tool authors.

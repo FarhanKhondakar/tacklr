@@ -95,7 +95,8 @@ func (c *UserSelectionInterrupt) Error() string {
 	return string(b)
 }
 
-// TypeChildWaiting is kept for old checkpoints. Inline specialists use JobWaitError.
+// TypeChildWaiting is kept for old checkpoints. A blocking specialist now
+// reports its child id on the tool step, and the session loop waits.
 // The payload is forwarded to the child session; Return is a no-op.
 const TypeChildWaiting = "child_waiting"
 

@@ -9,17 +9,15 @@ import (
 )
 
 // OverlaySpecialist copies the parent catalog spec and applies the named Specialist.
-func OverlaySpecialist(parent durable.AgentSpec, specialist string) (durable.AgentSpec, error) {
-	spec := tacklr.FindSpecialist(parent.Options.Specialists, specialist)
+func OverlaySpecialist(parent tacklr.AgentOptions, specialist string) (tacklr.AgentOptions, error) {
+	spec := tacklr.FindSpecialist(parent.Specialists, specialist)
 	if spec == nil {
-		return durable.AgentSpec{}, fmt.Errorf("%w: specialist %q", durable.ErrAgentNotFound, specialist)
+		return tacklr.AgentOptions{}, fmt.Errorf("%w: specialist %q", tacklr.ErrNotFound, specialist)
 	}
-	out := parent
-	out.Name = spec.Name
-	out.Options = parent.Options.WithSpecialist(spec)
-	out.Options.SessionID = ""
-	out.Options.MountSession = nil
-	out.Options.SkillsSession = nil
+	out := parent.WithSpecialist(spec)
+	out.SessionID = ""
+	out.MountSession = nil
+	out.SkillsSession = nil
 	return out, nil
 }
 
@@ -46,13 +44,9 @@ func NormalizeSpawn(specialist, task string) (string, string, error) {
 	return specialist, task, nil
 }
 
-// HasSpecialist reports whether agentID's catalog spec names a specialist.
-func HasSpecialist(cat durable.Catalog, agentID, name string) bool {
-	if cat == nil {
-		return false
-	}
-	spec, ok := cat.Lookup(agentID)
-	return ok && tacklr.FindSpecialist(spec.Options.Specialists, name) != nil
+// HasSpecialist reports whether the agent defines this assistant.
+func HasSpecialist(agent tacklr.AgentOptions, name string) bool {
+	return tacklr.FindSpecialist(agent.Specialists, name) != nil
 }
 
 // UnknownChild is cancel/wait with an id that is not this session's job.

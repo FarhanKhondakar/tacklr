@@ -60,7 +60,7 @@ func activityError(ctx context.Context, err error) error {
 
 // activities are the Inference and Tool bodies registered on the worker.
 type activities struct {
-	Catalog        durable.Catalog
+	Agent          tacklr.AgentOptions
 	Snapshots      durable.SnapshotStore
 	Projection     vfs.Projection
 	Fallback       durable.EventLog
@@ -79,7 +79,7 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 	defer cancel()
 	defer bindLiveTurn(in.SessionID, cancel)()
 	defer startHeartbeat(ctx)()
-	ctx = telemetry.BindTurnContext(ctx, in.Rec.AgentID, string(in.SessionID))
+	ctx = telemetry.BindTurnContext(ctx, a.Agent.Name, string(in.SessionID))
 	attempt := int32(1)
 	if activity.IsActivity(ctx) {
 		attempt = activity.GetInfo(ctx).Attempt
@@ -87,11 +87,11 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 	if attempt > 1 {
 		slog.WarnContext(ctx, "inference retry",
 			"area", telemetry.AreaRuntime, "session_id", in.SessionID,
-			"agent_id", in.Rec.AgentID, "attempt", attempt)
+			"agent_id", a.Agent.Name, "attempt", attempt)
 	} else {
 		slog.InfoContext(ctx, "inference started",
 			"area", telemetry.AreaRuntime, "session_id", in.SessionID,
-			"agent_id", in.Rec.AgentID, "had_tools", in.HadToolRound)
+			"agent_id", a.Agent.Name, "had_tools", in.HadToolRound)
 	}
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
@@ -165,7 +165,7 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 	defer cancel()
 	defer bindLiveTurn(in.SessionID, cancel)()
 	defer startHeartbeat(ctx)()
-	ctx = telemetry.BindTurnContext(ctx, in.Rec.AgentID, string(in.SessionID))
+	ctx = telemetry.BindTurnContext(ctx, a.Agent.Name, string(in.SessionID))
 	attempt := int32(1)
 	if activity.IsActivity(ctx) {
 		attempt = activity.GetInfo(ctx).Attempt
@@ -173,11 +173,11 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 	if attempt > 1 {
 		slog.WarnContext(ctx, "tool retry",
 			"area", telemetry.AreaHarness, "session_id", in.SessionID,
-			"agent_id", in.Rec.AgentID, "tool", in.Call.Name, "attempt", attempt)
+			"agent_id", a.Agent.Name, "tool", in.Call.Name, "attempt", attempt)
 	} else {
 		slog.InfoContext(ctx, "tool started",
 			"area", telemetry.AreaHarness, "session_id", in.SessionID,
-			"agent_id", in.Rec.AgentID, "tool", in.Call.Name, "namespace", in.Call.Namespace)
+			"agent_id", a.Agent.Name, "tool", in.Call.Name, "namespace", in.Call.Namespace)
 	}
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
@@ -194,11 +194,10 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 		adapter.CloseTurnTrees(ms, skillsMS)
 	}()
 	kids := &activityChildren{
-		parent:  in.SessionID,
-		agentID: in.Rec.AgentID,
-		catalog: a.Catalog,
-		jobs:    a.Jobs,
-		known:   append([]durable.SessionID(nil), in.Rec.Children...),
+		parent: in.SessionID,
+		agent:  a.Agent,
+		jobs:   a.Jobs,
+		known:  append([]durable.SessionID(nil), in.Rec.Children...),
 	}
 	h.BindJobHost(kids)
 	eng := h.Drive()
@@ -292,10 +291,7 @@ func (a *activities) harness(ctx context.Context, id durable.SessionID, rec dura
 			return nil, nil, nil, "", err
 		}
 	}
-	spec, ok := a.Catalog.Lookup(rec.AgentID)
-	if !ok {
-		return nil, nil, nil, "", durable.ErrAgentNotFound
-	}
+	spec := a.Agent
 	if rec.Specialist != "" {
 		over, err := adapter.OverlaySpecialist(spec, rec.Specialist)
 		if err != nil {

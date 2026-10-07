@@ -135,7 +135,7 @@ func FindSpecialist(specs []*Specialist, name string) *Specialist {
 // set them (Runtime injects a child tree).
 func (o AgentOptions) WithSpecialist(spec *Specialist) AgentOptions {
 	out := o
-	out.Config.SystemPrompt = spec.Instructions
+	out.SystemPrompt = spec.Instructions
 	if spec.Model != nil {
 		out.Model = spec.Model
 	}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
 )
@@ -16,7 +17,7 @@ const defaultHTTPShutdown = 5 * time.Second
 // Protocols is the ordered list of wire implementations (ACP and/or host protocols).
 type Server struct {
 	Runtime   durable.Runtime
-	Catalog   durable.Catalog
+	Agent     tacklr.AgentOptions
 	Protocols []Protocol
 	// Connections tracks ACP WebSocket connections.
 	// Custom protocols may ignore it.
@@ -32,20 +33,20 @@ type Server struct {
 
 // NewServer wraps a Runtime and one or more Protocols.
 // The ACP built-in is acp.New. Pass more Protocols to mount them on the same mux.
-func NewServer(rt durable.Runtime, cat durable.Catalog, protocols ...Protocol) *Server {
+func NewServer(rt durable.Runtime, agent tacklr.AgentOptions, protocols ...Protocol) *Server {
 	if rt == nil || len(protocols) == 0 {
 		panic("server: Runtime and at least one Protocol are required")
 	}
 	return &Server{
 		Runtime:     rt,
-		Catalog:     cat,
+		Agent:       agent,
 		Protocols:   protocols,
 		Connections: NewConnectionRegistry(),
 	}
 }
 
 func (s *Server) env(conn *Conn) ProtocolEnv {
-	return ProtocolEnv{Runtime: s.Runtime, Catalog: s.Catalog, Conn: conn, Security: s.Security, Connections: s.Connections}
+	return ProtocolEnv{Runtime: s.Runtime, Agent: s.Agent, Conn: conn, Security: s.Security, Connections: s.Connections}
 }
 
 // HTTPMux mounts every Protocol's HTTP routes. Used by ServeHTTP and tests.

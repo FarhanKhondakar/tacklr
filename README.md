@@ -152,30 +152,25 @@ func main() {
 	}
 	client := web.NewExa(os.Getenv("EXA_API_KEY"))
 
-	cat := durable.NewCatalog("agent")
-	cat.Register("agent", durable.AgentSpec{
-		Name: "Agent",
-		Options: tacklr.AgentOptions{
-			Config: tacklr.Config{
-				MaxWindowSize: 8192,
-				SystemPrompt:  "You are a concise assistant.",
-			},
-			Model:           model,
-			Brain:           eng,
-			SearchNamespace: ns,
-			BrainWriteKinds: brain.WriteKinds{
-				Discovery: "Discovery",
-				Fact:      "Fact",
-				Memory:    "Memory",
-			},
-			Tools: []*tacklr.Tool{
-				web.WebSearch(client),
-				web.WebFetch(client),
-			},
+	agent := tacklr.AgentOptions{
+		Name:            "Agent",
+		MaxWindowSize:   8192,
+		SystemPrompt:    "You are a concise assistant.",
+		Model:           model,
+		Brain:           eng,
+		SearchNamespace: ns,
+		BrainWriteKinds: brain.WriteKinds{
+			Discovery: "Discovery",
+			Fact:      "Fact",
+			Memory:    "Memory",
+		},
+		Tools: []*tacklr.Tool{
+			web.WebSearch(client),
+			web.WebFetch(client),
 		},
 		OpenVFS:    openVFS(jail, eng, ns),
 		OpenSkills: vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(filepath.Join(jail, "skills"))))),
-	})
+	}
 
 	c, err := temporal.Dial(client.Options{HostPort: os.Getenv("TEMPORAL_ADDRESS")})
 	if err != nil {
@@ -183,7 +178,7 @@ func main() {
 	}
 	defer c.Close()
 	cfg := temporal.Config{
-		Catalog:    cat,
+		Agent:      agent,
 		Snapshots:  durable.NewMemorySnapshot(),
 		Secrets:    durable.NewMemorySecretStorage(),
 		Projection: vfs.DirectProjection{},
@@ -194,7 +189,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer w.Stop()
-	srv := server.NewServer(rt, cat, acp.New(nil)).AllowAnonymousNetwork()
+	srv := server.NewServer(rt, agent, acp.New(nil)).AllowAnonymousNetwork()
 	log.Printf("ACP on http://127.0.0.1:8080/acp")
 	if err := srv.ServeHTTP(ctx, "127.0.0.1:8080"); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
@@ -229,7 +224,7 @@ func openVFS(jail string, eng *brain.Engine, ns brain.Namespace) vfs.OpenVFS {
 }
 ```
 
-Same Catalog, SnapshotStore, and SecretStorage on Temporal. `Snapshots` and `Secrets` are required and must be one instance both processes share:
+Same agent, SnapshotStore, and SecretStorage on Temporal. `Snapshots` and `Secrets` are required and must be one instance both processes share:
 
 ```go
 import (
@@ -244,7 +239,7 @@ if err != nil {
 }
 secrets := durable.NewMemorySecretStorage() // production: Redis / Postgres / Vault
 cfg := tacklrtemporal.Config{
-	Catalog:    cat,
+	Agent:      agent,
 	Snapshots:  snaps,
 	Secrets:    secrets,
 	Projection: vfs.DirectProjection{},
@@ -261,7 +256,7 @@ ACP `_tacklr/vfs/bind` still maps onto `Prompt.Auth`. The worker never sees thos
 
 Importing `tacklr` registers built-in interrupts, Word/Excel codecs, and the durable driver adapter. The agent sees `/workspace/work`, `/workspace/engram`. Skills load from `OpenSkills` and reach the model only through `read_skill`. A Drive or SharePoint bind on the prompt adds `/workspace/drive` or `/workspace/sharepoint` for that turn. Tests point the Drive/Graph SDKs at httptest servers with documented REST shapes (`NewGoogleDriveHTTP`, `NewGraph` + `vfs/testhttp`). `WithLexicalOnly` is the explicit no-embedder choice; production hosts pass `brain.WithEmbedder`.
 
-`telemetry.Init` installs the process-wide OpenTelemetry providers. With `OTLPEndpoint` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) it exports traces, metrics, and logs over OTLP (gRPC by default, or HTTP). Without an endpoint it still installs Temporal’s ReplaySafe tracer so workflow replay does not leak spans. Each Prompt or Resume is one `tacklr.turn` span; inference, tools, hand-off, and compress nest under it. `postgres.Store` Query/Exec spans join that same trace. Hosts must not start `tacklr.*` spans themselves. Metrics include turn duration and count, tool calls, model tokens, interrupts, hand-offs, compress, sessions, and checkpoints. Call `Init` before `durable/temporal.Dial`. Details: [`telemetry`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/telemetry).
+`telemetry.Init` installs the process-wide OpenTelemetry providers. With `OTLPEndpoint` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) it exports traces, metrics, and logs over OTLP (gRPC by default, or HTTP). Without an endpoint the tracer does not export. `durable/temporal.Dial` replaces that tracer with a replay-safe one that keeps the same export configuration, so workflow replay does not leak spans. Each Prompt or Resume is one `tacklr.turn` span; inference, tools, hand-off, and compress nest under it. `postgres.Store` Query/Exec spans join that same trace. Hosts must not start `tacklr.*` spans themselves. Metrics include turn duration and count, tool calls, model tokens, interrupts, hand-offs, compress, sessions, and checkpoints. Call `Init` before `Dial` when traces should be exported. Details: [`telemetry`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/telemetry).
 
 ### Tools
 

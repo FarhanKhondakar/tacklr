@@ -70,14 +70,6 @@ func TakeMessages(box *[]*tacklr.Message) []*tacklr.Message {
 	return out
 }
 
-// UserFromPrompt is the Prompt text or UserMessage for the window.
-func UserFromPrompt(text string, msg *tacklr.Message) *tacklr.Message {
-	if msg != nil {
-		return msg
-	}
-	return &tacklr.Message{Role: tacklr.RoleUser, Content: text}
-}
-
 // AbsorbAll writes msgs into the window in order. consumed is how many
 // absorb calls ran (including a failed one). Absorb failure is terminal
 // for the batch: leftover messages are not put back.

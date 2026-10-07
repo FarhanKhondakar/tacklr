@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr/server"
-
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -86,16 +84,7 @@ func (p *acpProtocol) handleVFSBind(ctx context.Context, env server.ProtocolEnv,
 	if len(params.Backends) == 0 {
 		return nil, server.Errorf(server.ErrInvalidRequest, "backends is required")
 	}
-	sess.mu.Lock()
-	agentID := sess.configValues["agent"]
-	sess.mu.Unlock()
-	if agentID == "" && env.Catalog != nil {
-		agentID = env.Catalog.DefaultID()
-	}
-	var spec durable.AgentSpec
-	if env.Catalog != nil {
-		spec, _ = env.Catalog.Lookup(agentID)
-	}
+	spec := env.Agent
 
 	type mounted struct {
 		Point    string `json:"point"`

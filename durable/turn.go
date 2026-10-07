@@ -10,19 +10,10 @@ import (
 	"github.com/ryanaldo34/tacklr/mcp"
 )
 
-// Wake kinds from Exec.Recv.
-const (
-	WakePrompt = "prompt"
-	WakeResume = "resume"
-	WakeCancel = "cancel"
-	WakeClose  = "close"
-)
-
 // PromptIn is one prompt delivered to a waiting session.
 type PromptIn struct {
 	Text        string
 	UserMessage *tacklr.Message
-	AgentID     string
 	MCPServers  []mcp.MCPConfig
 	Auth        AuthContext
 	State       map[string]any
@@ -33,13 +24,6 @@ type ResumeIn struct {
 	Responses map[string][]byte
 	Auth      AuthContext
 	State     map[string]any
-}
-
-// Wake is the next mailbox event.
-type Wake struct {
-	Kind   string
-	Prompt PromptIn
-	Resume ResumeIn
 }
 
 // InferenceInput is one model step. Rec is the snapshot row to persist.
@@ -96,41 +80,33 @@ type CommitInput struct {
 	Output     string
 }
 
-// Exec is the part of a session that depends on the durable system.
-// Run uses it for steps, the mailbox, and child sessions.
-// Inference, Tool, and Commit retry a network error inside the implementation.
-// Any other error is final.
-type Exec interface {
+// Step is the non-deterministic work inside one turn: model, tool, worker
+// body, and the terminal event. The implementation retries a wrapped
+// network error, a model refusal, and a stale checkpoint. Any other error
+// stops on the first attempt. Begin and End bracket Run so the
+// implementation can pin turn-scoped resources.
+type Step interface {
+	Begin(kind string, promptLen, resumes int)
+	End()
 	Infer(InferenceInput) (InferenceOutput, error)
 	Tool(ToolInput) (ToolOutput, error)
 	Commit(CommitInput) error
 	Emit(tacklr.StreamEvent)
-
-	// DrainPrompts takes prompts that arrived during a step.
-	DrainPrompts() []PromptIn
-
-	ChildIDs() []SessionID
-	CancelAll()
-	ApplyChild(ToolOutput) error
-	AwaitChild(SessionID) (string, error)
-	Harvest(inbox *[]*tacklr.Message)
-	WaitJobs(t *Turn, state *map[string]any) error
+	Job(name, task string) (string, error)
 }
 
 // Turn is one session's scheduler state. The snapshot holds the conversation.
 // Run is one prompt or resume, and returns when the turn parks, finishes, or fails.
 type Turn struct {
 	SessionID  SessionID
-	AgentID    string
 	Specialist string
 	Worker     string
 	Parent     SessionID
 
-	Mounts    []MountRecipe
-	MCP       []mcp.MCPConfig
-	Inbox     []*tacklr.Message
-	NextAgent string
-	NextMCP   []mcp.MCPConfig
+	Mounts  []MountRecipe
+	MCP     []mcp.MCPConfig
+	Inbox   []*tacklr.Message
+	NextMCP []mcp.MCPConfig
 	// Seed is CreateSession state until the first Run consumes it.
 	Seed map[string]any
 
@@ -149,7 +125,7 @@ type Turn struct {
 }
 
 // Run drives one turn. user is the prompt. resume is set when continuing a park.
-func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth AuthContext, extra map[string]any) {
+func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resume map[string][]byte, auth AuthContext, extra map[string]any) {
 	if len(resume) == 0 {
 		t.HadTools = false
 		t.Requests = 0
@@ -167,11 +143,10 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 
 	rec := func() Snapshot {
 		return Snapshot{
-			AgentID:    t.AgentID,
 			Specialist: t.Specialist,
 			Worker:     t.Worker,
 			Parent:     t.Parent,
-			Children:   x.ChildIDs(),
+			Children:   jobs.IDs(),
 			Mounts:     t.Mounts,
 		}
 	}
@@ -185,11 +160,10 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 		if errors.Is(err, context.Canceled) {
 			msg = context.Canceled.Error()
 			t.Inbox = nil
-			t.NextAgent = ""
 			t.NextMCP = nil
-			x.CancelAll()
+			jobs.CancelAll()
 		}
-		x.Emit(tacklr.StreamEvent{Type: tacklr.StreamEventError, Fail: msg, Content: msg})
+		step.Emit(tacklr.StreamEvent{Type: tacklr.StreamEventError, Fail: msg, Content: msg})
 	}
 
 	var extraUsers []*tacklr.Message
@@ -199,7 +173,7 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 	interruptData := []byte(nil)
 
 	if len(resume) > 0 {
-		out, err := x.Infer(InferenceInput{
+		out, err := step.Infer(InferenceInput{
 			SessionID:  t.SessionID,
 			Rec:        rec(),
 			MCPServers: t.MCP,
@@ -217,9 +191,9 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 
 	for {
 		if len(toolCalls)+len(t.Leftover) == 0 && !t.Parked {
-			x.Harvest(&t.Inbox)
+			t.Inbox = append(t.Inbox, sig.Ready()...)
 			if user == nil {
-				for _, p := range x.DrainPrompts() {
+				for _, p := range sig.Prompts() {
 					t.Steer(p, &turnState)
 				}
 			}
@@ -229,9 +203,9 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 				inferComplete = false
 			}
 		}
-		switch tacklr.Next(len(toolCalls), t.Parked, inferComplete, len(x.ChildIDs()) > 0) {
+		switch tacklr.Next(len(toolCalls), t.Parked, inferComplete, len(jobs.IDs()) > 0) {
 		case tacklr.ActionInfer:
-			out, err := x.Infer(InferenceInput{
+			out, err := step.Infer(InferenceInput{
 				SessionID:     t.SessionID,
 				Rec:           rec(),
 				MCPServers:    t.MCP,
@@ -260,7 +234,7 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 			t.HadTools = true
 			tc := toolCalls[0]
 			rest := toolCalls[1:]
-			tout, err := x.Tool(ToolInput{
+			tout, err := step.Tool(ToolInput{
 				SessionID:  t.SessionID,
 				Rec:        rec(),
 				MCPServers: t.MCP,
@@ -271,17 +245,17 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 				fail(err)
 				return
 			}
-			if err := x.ApplyChild(tout); err != nil {
+			if err := jobs.Start(tout); err != nil {
 				fail(err)
 				return
 			}
 			if tout.AwaitID != "" {
-				output, err := x.AwaitChild(tout.AwaitID)
+				output, err := jobs.Await(tout.AwaitID)
 				if err != nil {
 					fail(err)
 					return
 				}
-				if err := x.Commit(CommitInput{
+				if err := step.Commit(CommitInput{
 					SessionID:  t.SessionID,
 					Rec:        rec(),
 					MCPServers: t.MCP,
@@ -306,7 +280,7 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 		case tacklr.ActionYield:
 			t.Yielded = true
 			t.Overlay = turnState
-			x.Emit(tacklr.StreamEvent{
+			step.Emit(tacklr.StreamEvent{
 				Type:      tacklr.StreamEventInterrupt,
 				MessageID: interruptID,
 				Data:      interruptData,
@@ -314,15 +288,24 @@ func (t *Turn) Run(x Exec, user *tacklr.Message, resume map[string][]byte, auth 
 			return
 		case tacklr.ActionComplete:
 			t.Terminal = SessionComplete
-			x.Emit(tacklr.StreamEvent{Type: tacklr.StreamEventComplete})
+			step.Emit(tacklr.StreamEvent{Type: tacklr.StreamEventComplete})
 			return
 		case tacklr.ActionWait:
-			err := x.WaitJobs(t, &turnState)
-			if err == nil {
+			t.Inbox = append(t.Inbox, sig.Ready()...)
+			if len(t.Inbox) > 0 || len(jobs.IDs()) == 0 {
 				break
 			}
-			fail(err)
-			return
+			switch w := sig.Wait(); w.Kind {
+			case WakePrompt:
+				t.Steer(w.Prompt, &turnState)
+			case WakeChild:
+				if w.Child != nil {
+					t.Inbox = append(t.Inbox, w.Child)
+				}
+			case WakeCancel:
+				fail(context.Canceled)
+				return
+			}
 		}
 	}
 }
@@ -337,9 +320,6 @@ func (t *Turn) Steer(p PromptIn, state *map[string]any) {
 	t.Mounts = ApplyAuth(t.Mounts, p.Auth)
 	if state != nil {
 		*state = MergeUserState(*state, p.State)
-	}
-	if p.AgentID != "" {
-		t.NextAgent = p.AgentID
 	}
 	if p.MCPServers != nil {
 		t.NextMCP = p.MCPServers

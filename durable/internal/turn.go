@@ -12,18 +12,17 @@ import (
 
 // ConstructTurn opens VFS trees and builds a TurnManager. On NewTurnManager
 // failure the trees are closed.
-func ConstructTurn(ctx context.Context, spec durable.AgentSpec, threadID string, bindings []vfs.Binding, proj vfs.Projection, extraMCP []mcp.MCPConfig) (*tacklr.TurnManager, *vfs.MountSession, *vfs.MountSession, error) {
-	ms, skills, err := OpenTurnSessions(ctx, threadID, spec, bindings, proj)
+func ConstructTurn(ctx context.Context, agent tacklr.AgentOptions, threadID string, bindings []vfs.Binding, proj vfs.Projection, extraMCP []mcp.MCPConfig) (*tacklr.TurnManager, *vfs.MountSession, *vfs.MountSession, error) {
+	ms, skills, err := OpenTurnSessions(ctx, threadID, agent, bindings, proj)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	opts := spec.Options
+	opts := agent
 	opts.SessionID = threadID
 	opts.MountSession = ms
 	opts.SkillsSession = skills
-	opts.SkillsRoot = spec.SkillsRoot
 	if len(extraMCP) > 0 {
-		opts.MCPConfigs = append(append([]mcp.MCPConfig(nil), spec.Options.MCPConfigs...), extraMCP...)
+		opts.MCPConfigs = append(append([]mcp.MCPConfig(nil), agent.MCPConfigs...), extraMCP...)
 	}
 	h, err := tacklr.NewTurnManager(ctx, opts)
 	if err != nil {

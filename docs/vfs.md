@@ -58,7 +58,7 @@ ReadText → provider OpenDocument (service is source of truth)
 
 ## Mounts
 
-The only top-level mount is **`/workspace`**. Hosts close over clients in `vfs.Open` funcs and name each backend with `vfs.At`. `AgentSpec.OpenVFS` (usually `vfs.Tree`) builds a fresh `MountSession` each turn. Durable child sessions do not share the parent’s live tree.
+The only top-level mount is **`/workspace`**. Hosts close over clients in `vfs.Open` funcs and name each backend with `vfs.At`. `AgentOptions.OpenVFS` (usually `vfs.Tree`) builds a fresh `MountSession` each turn. Durable child sessions do not share the parent’s live tree.
 
 ```go
 open := vfs.Tree(
@@ -99,7 +99,7 @@ Tests point the official SDKs at httptest: `NewGoogleDriveHTTP` and `NewGraph(ho
 
 ### Skills
 
-Playbooks are **not** on the agent `/workspace` tree. Hosts set `AgentSpec.OpenSkills` to a separate `vfs.Tree` (often `At("skills", vfs.Union(...))`). Overlapping first-level names in a Union are `ErrAmbiguous`. The loader walks `SkillsRoot` (empty means `/workspace/skills` on that host-only session). The agent never sees those paths. Full instructions load only through `read_skill`.
+Playbooks are **not** on the agent `/workspace` tree. Hosts set `AgentOptions.OpenSkills` to a separate `vfs.Tree` (often `At("skills", vfs.Union(...))`). Overlapping first-level names in a Union are `ErrAmbiguous`. The loader walks `SkillsRoot` (empty means `/workspace/skills` on that host-only session). The agent never sees those paths. Full instructions load only through `read_skill`.
 
 Host-owned roots and secrets (local jail, S3 / Azure Blob client) live in the Open closures, not on mounts or checkpoints.
 
@@ -258,7 +258,7 @@ Tool guidance:
 
 FUSE: hosts call `MountSession.FuseMount(dir)` for a kernel tree. **The only mount point is `/workspace`**. Multi-segment points (`/tmp/tacklr`) fail `FuseMount`. If `ReadText` succeeds (`Textual`), `getattr`/`Read` use that plaintext (so `cat`/`rg` see the projection). Otherwise `Stat.Size` + `io.ReaderAt`. Kernel writes persist through `WriteFile` only when `KernelWritable` (`IdentityCodec`). Projected textual types (Word, Notion, Docs) are **read-only** on the kernel (`EROFS`); the agent `write` tool still uses `WriteDocument`. `Tree` attaches `/workspace`; `FuseMount` is the host kernel mount. `HostDir()` is the last mount directory (host-facing only). `FuseAvailable()` probes `/dev/fuse` and `/dev/macfuse*`. `Close` unmounts. Host `ls`/`rg` from HostDir see `workspace/work/…`.
 
-`durable.Runtime` injects a **turn-scoped** `MountSession` from `AgentSpec.OpenVFS` and attaches FUSE for that slice: `$TMP/tacklr-fuse/<session>` mode `0700`. `OpenSkills` is a second session with no FUSE projection; the agent never receives it. The activity (or in-process turn slice) closes both trees when the step ends. Bind/unbind only record credentials; they do not keep a live tree between prompts. Production without a device has **no** `MountSession` (no VFS tools, no `run_command`). Tests inject `vfs.DirectProjection` so `read`/`write` still work and `run_command` returns `ErrFuseNotMounted` until `HostDir` is set. Device present and mount fails after one suffix retry → fail-hard. Workers reconstruct a `MountSession` per activity; they do not hold a parent pointer.
+`durable.Runtime` injects a **turn-scoped** `MountSession` from `AgentOptions.OpenVFS` and attaches FUSE for that slice: `$TMP/tacklr-fuse/<session>` mode `0700`. `OpenSkills` is a second session with no FUSE projection; the agent never receives it. The activity (or in-process turn slice) closes both trees when the step ends. Bind/unbind only record credentials; they do not keep a live tree between prompts. Production without a device has **no** `MountSession` (no VFS tools, no `run_command`). Tests inject `vfs.DirectProjection` so `read`/`write` still work and `run_command` returns `ErrFuseNotMounted` until `HostDir` is set. Device present and mount fails after one suffix retry → fail-hard. Workers reconstruct a `MountSession` per activity; they do not hold a parent pointer.
 
 `TextCodec` requires valid UTF-8 and builds a `TextDocument` labeled with the caller’s media type.
 

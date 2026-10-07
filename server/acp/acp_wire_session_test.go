@@ -59,13 +59,11 @@ func (tr *toolRecorder) call(i int) []string {
 	return tr.seen[i]
 }
 
-func recordingStrategy(tr *toolRecorder) *testkit.ScriptedModel {
-	return &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			tr.record(tools)
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "done", IsComplete: true}
-		},
-	}
+func recordingStrategy(t *testing.T, tr *toolRecorder) tacklr.InferenceStrategy {
+	return testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+		tr.record(tools)
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "done", IsComplete: true}
+	})
 }
 
 func acpSessionID(t *testing.T, rec *httptest.ResponseRecorder) string {
@@ -89,20 +87,18 @@ func acpSessionID(t *testing.T, rec *httptest.ResponseRecorder) string {
 func TestHandleRPC_sessionMCPServers_toolCallReturnsResult(t *testing.T) {
 	mcpHTTP := newTestMCPServer(t, "greet")
 	var invokeCount int
-	strategy := &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			invokeCount++
-			if invokeCount == 1 {
-				ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventFunctionCall, ToolCalls: []tacklr.ToolCall{
-					{ID: "call_mcp", CallID: "call_mcp", Name: "greet", Namespace: "testmcp", Arguments: `{}`},
-				}, IsComplete: true}
-				ch <- tacklr.LLMResponseChunk{IsComplete: true}
-				return
-			}
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "mcp done", IsComplete: true}
-		},
-	}
-	r := newTestRuntime(t, strategy, durable.AgentSpec{})
+	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+		invokeCount++
+		if invokeCount == 1 {
+			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventFunctionCall, ToolCalls: []tacklr.ToolCall{
+				{ID: "call_mcp", CallID: "call_mcp", Name: "greet", Namespace: "testmcp", Arguments: `{}`},
+			}, IsComplete: true}
+			ch <- tacklr.LLMResponseChunk{IsComplete: true}
+			return
+		}
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "mcp done", IsComplete: true}
+	})
+	r := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 
 	rec1 := serveACPRaw(t, r, `{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[{"type":"http","name":"testmcp","url":"`+mcpHTTP.URL+`","headers":[]}]}}`)
 	sessionID := acpSessionID(t, rec1)
@@ -170,7 +166,7 @@ func TestHandleRPC_sessionResume_overridesMCPServers(t *testing.T) {
 	serverA := newTestMCPServer(t, "tool_a")
 	serverB := newTestMCPServer(t, "tool_b")
 	recorder := &toolRecorder{}
-	r := newTestRuntime(t, recordingStrategy(recorder), durable.AgentSpec{})
+	r := newTestRuntime(t, recordingStrategy(t, recorder), tacklr.AgentOptions{})
 
 	rec1 := serveACPRaw(t, r, `{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[{"type":"http","name":"a","url":"`+serverA.URL+`","headers":[]}]}}`)
 	sessionID := acpSessionID(t, rec1)

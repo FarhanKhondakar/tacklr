@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/server"
 	"github.com/ryanaldo34/tacklr/server/acp"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
 )
@@ -44,9 +44,9 @@ func TestACPAuthentication_ownsSessionsByGenericPrincipal(t *testing.T) {
 		Description: "Authenticate with the host",
 		Scheme:      "host-login",
 	}}, true)
-	k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+	k := newTestRuntime(t, testkit.HTTPModel(t, nil), tacklr.AgentOptions{})
 	connection := &server.Conn{}
-	env := server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Conn: connection, Security: service}
+	env := server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent, Conn: connection, Security: service}
 	call := func(body string) map[string]any {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestACPAuthentication_ownsSessionsByGenericPrincipal(t *testing.T) {
 	bobConnection := &server.Conn{Security: &bobContext}
 	bobRecorder := httptest.NewRecorder()
 	bobConnection.Writer = acp.HTTPWriter(bobRecorder)
-	bobEnv := server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Conn: bobConnection, Security: service}
+	bobEnv := server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent, Conn: bobConnection, Security: service}
 	load := `{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"` + sessionID + `"}}`
 	_ = protocol.HandleInbound(t.Context(), bobEnv, []byte(load))
 	var bobResponse map[string]any
@@ -120,8 +120,8 @@ func TestServer_WithSecurity_authenticatesHTTPRequests(t *testing.T) {
 			return tacklrsecurity.NewPrincipal(string(attempt.Credential.Bytes()))
 		}),
 	}
-	k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
-	srv := server.NewServer(k.Runtime, k.Catalog, healthProtocol{}).WithSecurity(service, func(r *http.Request) (tacklrsecurity.Attempt, bool) {
+	k := newTestRuntime(t, testkit.HTTPModel(t, nil), tacklr.AgentOptions{})
+	srv := server.NewServer(k.Runtime, k.Agent, healthProtocol{}).WithSecurity(service, func(r *http.Request) (tacklrsecurity.Attempt, bool) {
 		if token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); token != r.Header.Get("Authorization") {
 			return tacklrsecurity.Attempt{Scheme: "bearer", Credential: tacklrsecurity.NewSecret([]byte(token))}, true
 		}
@@ -146,7 +146,7 @@ func TestServer_WithSecurity_authenticatesHTTPRequests(t *testing.T) {
 	denied := httptest.NewRecorder()
 	badReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	badReq.Header.Set("Authorization", "Bearer bad")
-	failAuth := server.NewServer(k.Runtime, k.Catalog, healthProtocol{}).WithSecurity(&tacklrsecurity.Service{
+	failAuth := server.NewServer(k.Runtime, k.Agent, healthProtocol{}).WithSecurity(&tacklrsecurity.Service{
 		Authenticator: testAuthenticator(func(_ context.Context, attempt tacklrsecurity.Attempt) (tacklrsecurity.Principal, error) {
 			if string(attempt.Credential.Bytes()) == "bad" {
 				return tacklrsecurity.Principal{}, errors.New("nope")
@@ -164,7 +164,7 @@ func TestServer_WithSecurity_authenticatesHTTPRequests(t *testing.T) {
 		t.Fatalf("failed authenticate status = %d", denied.Code)
 	}
 
-	acp := server.NewServer(k.Runtime, k.Catalog, acp.New(nil)).WithSecurity(service, func(*http.Request) (tacklrsecurity.Attempt, bool) {
+	acp := server.NewServer(k.Runtime, k.Agent, acp.New(nil)).WithSecurity(service, func(*http.Request) (tacklrsecurity.Attempt, bool) {
 		return tacklrsecurity.Attempt{}, false
 	})
 	open := httptest.NewRecorder()

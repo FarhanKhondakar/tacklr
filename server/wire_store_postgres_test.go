@@ -13,7 +13,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 )
 
@@ -89,13 +88,11 @@ func TestPostgresWireStore_acpLoadAfterRestart(t *testing.T) {
 	conn := wireConn(t)
 	wire := server.NewPostgresWireStore(conn, "acp")
 
-	strategy := &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
-		},
-	}
+		})
 
-	r1 := newTestRuntime(t, strategy, durable.AgentSpec{})
+	r1 := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	s1 := newACPTestServerWithWire(t, r1, wire)
 	rec1 := s1.rpc(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/proj"}}`)
 	sessionID, _ := acpRPCResult(t, rec1)["sessionId"].(string)

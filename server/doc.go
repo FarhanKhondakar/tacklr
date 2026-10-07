@@ -4,7 +4,7 @@
 // stream framing, and HITL resume. The ACP built-in is package server/acp.
 // More protocols can be mounted on the same Server:
 //
-//	srv := server.NewServer(rt, cat, acp.New(nil), myProtocol{})
+//	srv := server.NewServer(rt, agent, acp.New(nil), myProtocol{})
 //	_ = srv.ServeHTTP(ctx, addr)
 //
 // The program on the other end of a connection is the caller's. This module

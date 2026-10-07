@@ -43,7 +43,7 @@ func (c *Conn) EstablishSecurity(securityContext tacklrsecurity.Context) {
 // ProtocolEnv is the domain + connection context passed into protocol handlers.
 type ProtocolEnv struct {
 	Runtime durable.Runtime
-	Catalog durable.Catalog
+	Agent   tacklr.AgentOptions
 	Conn    *Conn
 	// Security is protocol-neutral. Implementations map wire credentials into
 	// this service and store the resulting Context on Conn.
