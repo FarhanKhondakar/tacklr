@@ -57,6 +57,14 @@ func (s *OpenAIInferenceStrategy) SetPromptCacheKey(key string) {
 	s.CacheKey = strings.TrimSpace(key)
 }
 
+// Clone returns a strategy the harness can mutate per turn. Parent and child
+// turns share the host strategy and run at the same time. The copy keeps the
+// HTTP client and model settings. Cache key and instructions stay on the copy.
+func (s *OpenAIInferenceStrategy) Clone() tacklr.InferenceStrategy {
+	cp := *s
+	return &cp
+}
+
 // promptCache resolves the cache profile for this strategy's model and endpoint.
 // The default is per-provider resolution; a strategy may pin its own profile.
 func (s *OpenAIInferenceStrategy) promptCache() promptCache {

@@ -216,6 +216,9 @@ func (h *TurnManager) finishInit(ctx context.Context, specialists []*Specialist)
 		h.initVFSIndexBridge()
 	}
 	h.injectBuiltinTools()
+	if c, ok := h.model.(interface{ Clone() InferenceStrategy }); ok {
+		h.model = c.Clone()
+	}
 	if s, ok := h.model.(interface{ SetPromptCacheKey(string) }); ok && h.sessionId != "" {
 		s.SetPromptCacheKey(h.sessionId)
 	}
