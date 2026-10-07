@@ -46,7 +46,7 @@ func TestNewTurnManager_constructFailClosed(t *testing.T) {
 	_, err := NewTurnManager(context.Background(), AgentOptions{
 		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
-		SkillsSession: ms,
+		skillsSession: ms,
 	})
 	if err == nil || !strings.Contains(err.Error(), "initialize skills") {
 		t.Fatalf("want skills construct error, got %v", err)
@@ -70,8 +70,8 @@ func TestNewTurnManager_skillsIsolatedFromWorkspace(t *testing.T) {
 	h := mustNewTurnManager(t, AgentOptions{
 		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
-		MountSession:  ms,
-		SkillsSession: skillsMS,
+		mountSession:  ms,
+		skillsSession: skillsMS,
 	})
 	t.Cleanup(h.Close)
 
@@ -207,7 +207,7 @@ func TestTurnManager_checkpointAfterRun(t *testing.T) {
 	wd := &recordingWatchdog{}
 	mock := &scriptedModel{SupportsMIMEFn: IsTextMIME}
 	h, err := NewTurnManager(t.Context(), AgentOptions{
-		SessionID:     "sess",
+		sessionID:     "sess",
 		Model:         mock,
 		WatchDog:      wd,
 		MaxWindowSize: 8192, SystemPrompt: "be brief",

@@ -62,8 +62,8 @@ func newLiveStack(t *testing.T, agent tacklr.AgentOptions) *liveStack {
 	log := session.NewMemoryEventLog()
 	secrets := session.NewMemorySecretStorage()
 	cfg := Config{Agent: agent, TaskQueue: tq, Snapshots: snaps, Fallback: log, Projection: vfs.DirectProjection{}, Secrets: secrets}
-	rt := New(c, cfg)
-	w := NewWorker(c, cfg)
+	rt := Open(c, cfg)
+	w := rt.StartWorker()
 	if err := w.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -74,14 +74,7 @@ func newLiveStack(t *testing.T, agent tacklr.AgentOptions) *liveStack {
 func (s *liveStack) RestartWorker(t *testing.T) {
 	t.Helper()
 	s.Worker.Stop()
-	w := NewWorker(s.Client, Config{
-		Agent:      s.Agent,
-		TaskQueue:  s.TaskQueue,
-		Snapshots:  s.Snapshots,
-		Fallback:   s.Runtime.(*Runtime).fallback,
-		Projection: vfs.DirectProjection{},
-		Secrets:    s.Secrets,
-	})
+	w := s.Runtime.(*Runtime).StartWorker()
 	if err := w.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -344,25 +337,21 @@ func TestLive_secretsNotInHistory(t *testing.T) {
 	}
 }
 
-func TestNew_panicsWithoutClientOrCatalog(t *testing.T) {
+func TestOpen_panicsWithoutClient(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, nil), MaxWindowSize: 8192}
 	stub := &struct{ client.Client }{}
-	snaps := session.NewMemorySnapshot()
-	secrets := session.NewMemorySecretStorage()
-	mustPanic(t, func() { New(nil, Config{Agent: agent, Snapshots: snaps, Secrets: secrets}) })
-	mustPanic(t, func() { New(stub, Config{}) })
-	mustPanic(t, func() { New(stub, Config{Agent: agent}) })
-	mustPanic(t, func() { New(stub, Config{Agent: agent, Snapshots: snaps}) })
-	mustPanic(t, func() { NewWorker(stub, Config{}) })
-	log := session.NewMemoryEventLog()
-	rt := New(stub, Config{Agent: agent, Snapshots: snaps, Secrets: secrets, DisableStreams: true, TurnLocality: time.Minute, Fallback: log})
+	mustPanic(t, func() { Open(nil, Config{Agent: agent}) })
+	rt := Open(stub, Config{Agent: agent, DisableStreams: true, TurnLocality: time.Minute})
+	if rt.snapshots == nil || rt.secrets == nil {
+		t.Fatal("zero Snapshots and Secrets must use the memory stores")
+	}
 	if rt.taskQueue != "tacklr" || !rt.disableStreams {
 		t.Fatalf("defaults tq=%q streams=%v", rt.taskQueue, rt.disableStreams)
 	}
 	if rt.activityTimeout != 10*time.Minute || rt.heartbeatTimeout != 30*time.Second || rt.activityAttempts != 3 {
 		t.Fatalf("activity defaults timeout=%v heartbeat=%v attempts=%d", rt.activityTimeout, rt.heartbeatTimeout, rt.activityAttempts)
 	}
-	hour := New(stub, Config{Agent: agent, Snapshots: snaps, Secrets: secrets, TaskQueue: "q", ActivityTimeout: time.Hour, HeartbeatTimeout: time.Minute, ActivityAttempts: 1})
+	hour := Open(stub, Config{Agent: agent, TaskQueue: "q", ActivityTimeout: time.Hour, HeartbeatTimeout: time.Minute, ActivityAttempts: 1})
 	if hour.activityTimeout != time.Hour || hour.heartbeatTimeout != time.Minute || hour.activityAttempts != 1 {
 		t.Fatalf("cfg timeout=%v heartbeat=%v attempts=%d", hour.activityTimeout, hour.heartbeatTimeout, hour.activityAttempts)
 	}
@@ -408,7 +397,7 @@ func (nopWorkflowClient) QueryWorkflow(context.Context, string, string, string, 
 
 func TestRuntime_promptFailsWhenVaultSealed(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, nil), MaxWindowSize: 8192}
-	rt := New(nopWorkflowClient{}, Config{
+	rt := Open(nopWorkflowClient{}, Config{
 		Agent: agent, Snapshots: session.NewMemorySnapshot(), Secrets: failPutSecrets{}, DisableStreams: true,
 		Fallback: session.NewMemoryEventLog(),
 	})
@@ -431,8 +420,12 @@ func TestRuntime_closeDeletesSecrets(t *testing.T) {
 	}}}}); err != nil {
 		t.Fatal(err)
 	}
-	rt := New(nopWorkflowClient{}, Config{
-		Agent: agent, Snapshots: session.NewMemorySnapshot(), Secrets: store, DisableStreams: true,
+	snaps := session.NewMemorySnapshot()
+	if _, err := snaps.Save(t.Context(), "s", session.Snapshot{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	rt := Open(nopWorkflowClient{}, Config{
+		Agent: agent, Snapshots: snaps, Secrets: store, DisableStreams: true,
 		Fallback: session.NewMemoryEventLog(),
 	})
 	if err := rt.Close(t.Context(), "s"); err != nil {
@@ -441,6 +434,12 @@ func TestRuntime_closeDeletesSecrets(t *testing.T) {
 	got, err := store.Get(t.Context(), "s")
 	if err != nil || len(got.Auth.Bindings) != 0 {
 		t.Fatalf("close left secrets: %+v %v", got, err)
+	}
+	if _, _, err := snaps.Load(t.Context(), "s"); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("close left the snapshot: %v", err)
+	}
+	if err := rt.Prompt(t.Context(), "s", session.Prompt{Text: "again"}); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("prompt after close: %v", err)
 	}
 }
 

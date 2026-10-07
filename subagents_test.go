@@ -80,7 +80,7 @@ func TestWithSpecialist_sharesHostMountWriteAndCatalog(t *testing.T) {
 	parent, ms, eng, ns := vfsIndexHarness(t, true)
 	_ = parent
 	worker := mustNewTurnManager(t, AgentOptions{
-		MountSession:    ms,
+		mountSession:    ms,
 		Model:           &scriptedModel{},
 		Brain:           eng,
 		SearchNamespace: ns,
@@ -143,8 +143,8 @@ func TestWithSpecialist_inheritsParentSkills(t *testing.T) {
 	opts := AgentOptions{
 		MaxWindowSize: 8192, MaxTurnRequests: 4,
 		Model:         &scriptedModel{},
-		MountSession:  ms,
-		SkillsSession: skillsMS,
+		mountSession:  ms,
+		skillsSession: skillsMS,
 	}
 	parent := mustNewTurnManager(t, opts)
 	t.Cleanup(parent.Close)
@@ -152,8 +152,8 @@ func TestWithSpecialist_inheritsParentSkills(t *testing.T) {
 		t.Fatal("parent missing read_skill")
 	}
 	inherited := opts.WithSpecialist(&Specialist{Name: "researcher", Model: &scriptedModel{}})
-	if inherited.MaxTurnRequests != 4 || inherited.MountSession != ms {
-		t.Fatalf("WithSpecialist max=%d mount=%v", inherited.MaxTurnRequests, inherited.MountSession != nil)
+	if inherited.MaxTurnRequests != 4 || inherited.mountSession != ms {
+		t.Fatalf("WithSpecialist max=%d mount=%v", inherited.MaxTurnRequests, inherited.mountSession != nil)
 	}
 
 	worker := mustNewTurnManager(t, inherited)

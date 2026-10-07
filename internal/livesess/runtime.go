@@ -10,9 +10,9 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/ryanaldo34/tacklr"
+	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/session/temporal"
-	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -46,8 +46,8 @@ func Runtime(t testing.TB, agent tacklr.AgentOptions) session.Runtime {
 		Projection:     vfs.DirectProjection{},
 		DisableStreams: true,
 	}
-	rt := temporal.New(c, cfg)
-	w := temporal.NewWorker(c, cfg)
+	rt := temporal.Open(c, cfg)
+	w := rt.StartWorker()
 	stop := make(chan any)
 	done := make(chan struct{})
 	go func() {

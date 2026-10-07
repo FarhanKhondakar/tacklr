@@ -28,8 +28,8 @@ func vfsIndexHarness(t *testing.T, withNS bool) (*TurnManager, *vfs.MountSession
 	ns := mustNS(t, "id", uuid.NewString())
 	ms := mustMountTree(t, "vfs-idx-tools", vfs.At("work", vfs.Local(t.TempDir())))
 	opts := AgentOptions{
-		SessionID:       "vfs-idx-tools",
-		MountSession:    ms,
+		sessionID:       "vfs-idx-tools",
+		mountSession:    ms,
 		Model:           &scriptedModel{},
 		Brain:           eng,
 		UnattendedWrite: true,
@@ -243,8 +243,8 @@ func TestVFSIndexTools_prefixAutoIndex(t *testing.T) {
 	}
 	ns := mustNS(t, "id", uuid.NewString())
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:    "policy-prefix",
-		MountSession: ms, Model: &scriptedModel{},
+		sessionID:    "policy-prefix",
+		mountSession: ms, Model: &scriptedModel{},
 		Brain: eng, SearchNamespace: ns,
 	})
 	t.Cleanup(h.Close)
@@ -279,8 +279,8 @@ func TestKnowledgeSaveSearchRead(t *testing.T) {
 		vfs.At("engram", engram.Open(eng, brain.Scope{Namespace: ns})),
 	)
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:    "save-mem",
-		MountSession: ms, Model: &scriptedModel{},
+		sessionID:    "save-mem",
+		mountSession: ms, Model: &scriptedModel{},
 		Brain: eng, SearchNamespace: ns,
 		BrainWriteKinds: brain.WriteKinds{Discovery: "Discovery", Fact: "Fact"},
 	})
@@ -404,8 +404,8 @@ func TestKnowledgeSave_rootsMount(t *testing.T) {
 		vfs.At("discovery", engram.Open(eng, brain.Scope{Namespace: ns})).Profile("brain").Indexed(vfsindex.PolicyNone),
 	)
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:    "save-roots",
-		MountSession: ms, Model: &scriptedModel{},
+		sessionID:    "save-roots",
+		mountSession: ms, Model: &scriptedModel{},
 		Brain: eng, SearchNamespace: ns,
 		BrainWriteKinds: brain.WriteKinds{Discovery: "Discovery"},
 	})
@@ -524,13 +524,13 @@ func TestRun_workspaceResearchTurn(t *testing.T) {
 	}
 
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:       "research-turn",
+		sessionID:       "research-turn",
 		MaxWindowSize:   400,
 		SystemPrompt:    "You are a research agent. Prefer tools over guessing.",
 		MaxTurnRequests: 20,
 		ContextPolicy:   ContextPolicy{PressureRatio: 0.6, CompressFraction: 0.5},
 		WatchDog:        wd,
-		MountSession:    ms,
+		mountSession:    ms,
 		Brain:           eng,
 		SearchNamespace: ns,
 		BrainWriteKinds: brain.WriteKinds{Discovery: "Discovery"},
@@ -608,8 +608,8 @@ func TestPathNativeGraphLinkExpand(t *testing.T) {
 	}
 	ns := mustNS(t, "id", uuid.NewString())
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:    "path-graph",
-		MountSession: ms, Model: &scriptedModel{},
+		sessionID:    "path-graph",
+		mountSession: ms, Model: &scriptedModel{},
 		Brain: eng, SearchNamespace: ns,
 	})
 	t.Cleanup(h.Close)

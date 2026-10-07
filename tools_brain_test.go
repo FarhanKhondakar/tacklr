@@ -266,7 +266,7 @@ func TestBrainTools_searchFindExactContinueAndCheckpoint(t *testing.T) {
 		Model:           &scriptedModel{},
 		Brain:           eng,
 		SearchNamespace: ns,
-		SessionID:       "brain-sc-1",
+		sessionID:       "brain-sc-1",
 	})
 
 	searchTool := h.findTool("search", "")
@@ -296,7 +296,7 @@ func TestBrainTools_searchFindExactContinueAndCheckpoint(t *testing.T) {
 		Model:           &scriptedModel{},
 		Brain:           eng,
 		SearchNamespace: ns,
-		SessionID:       "brain-sc-1",
+		sessionID:       "brain-sc-1",
 	})
 	out2, err := h2.findTool("continue", "").invoke(ctx, `{"result_set_id":"`+page.ResultSetID.String()+`","limit":2}`, turnRuntime(h2))
 	if err != nil {
@@ -579,7 +579,7 @@ func TestWorkerInheritsBrainAndNamespace(t *testing.T) {
 	t.Cleanup(parentH.Close)
 	workerOpts := parentOpts.WithSpecialist(parentH.specialists["researcher"])
 	workerOpts.SearchNamespace = ns
-	workerOpts.SessionID = "w/researcher/spawn_tc1"
+	workerOpts.sessionID = "w/researcher/spawn_tc1"
 	worker := mustNewTurnManager(t, workerOpts)
 	t.Cleanup(worker.Close)
 
@@ -639,8 +639,8 @@ func TestBrainTools_engramPathGraph(t *testing.T) {
 		vfs.At("engram", engram.Open(eng, brain.Scope{Namespace: ns})),
 	)
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:    "engram-graph",
-		MountSession: ms, Model: &scriptedModel{},
+		sessionID:    "engram-graph",
+		mountSession: ms, Model: &scriptedModel{},
 		Brain: eng, SearchNamespace: ns,
 	})
 	t.Cleanup(h.Close)

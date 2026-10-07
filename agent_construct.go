@@ -14,8 +14,8 @@ import (
 )
 
 // AgentOptions is the one agent, and the argument to NewTurnManager.
-// A durable runtime also uses OpenVFS and OpenSkills to build the trees for
-// each turn, then sets SessionID, MountSession, and SkillsSession.
+// A session runtime uses OpenVFS and OpenSkills to build the trees for each
+// turn, then BindTurn attaches the session id and those trees.
 //
 // ContextPolicy knobs stay host-settable. Adaptive Case Management itself
 // is harness-owned and cannot be replaced.
@@ -26,9 +26,9 @@ type AgentOptions struct {
 	SystemPrompt  string
 	// MaxTurnRequests limits Model.Invoke calls per turn. Zero means no limit.
 	MaxTurnRequests uint
-	// SessionID is the durable thread id. The runtime sets it per turn.
-	SessionID string
-	Model     InferenceStrategy
+	Model           InferenceStrategy
+	// sessionID is the thread id for this turn. BindTurn sets it.
+	sessionID string
 	// Name is the label used in logs. It does not select behavior.
 	Name     string
 	WatchDog AgentWatchDog
@@ -61,9 +61,9 @@ type AgentOptions struct {
 	// no skills unless SkillsLoader is set. The workspace mount never
 	// includes this tree.
 	OpenSkills vfs.OpenVFS
-	// SkillsSession is that tree for this turn. The runtime sets it from
-	// OpenSkills. VFS tools do not see it.
-	SkillsSession *vfs.MountSession
+	// skillsSession is that tree for this turn. BindTurn sets it from the
+	// tree OpenSkills returned. VFS tools do not see it.
+	skillsSession *vfs.MountSession
 	// SkillsRoot is the virtual directory skills.Loader walks. Empty means
 	// /workspace/skills.
 	SkillsRoot string
@@ -82,10 +82,10 @@ type AgentOptions struct {
 	SearchNamespace brain.Namespace
 	// OpenVFS builds the /workspace tree for each turn. Nil means no VFS.
 	OpenVFS vfs.OpenVFS
-	// MountSession is that tree for this turn. The runtime sets it from
-	// OpenVFS and the prompt's bindings. Embedders may pass their own.
-	// The injector closes it after the turn. Do not mount skills here.
-	MountSession *vfs.MountSession
+	// mountSession is that tree for this turn. BindTurn sets it from the
+	// tree OpenVFS returned. The runtime closes it after the turn.
+	// Do not mount skills here.
+	mountSession *vfs.MountSession
 	// UnattendedRunCommand injects run_command without ToolPermissionOnCall.
 	// Default false: run_command parks for permission.
 	UnattendedRunCommand bool
@@ -96,8 +96,17 @@ type AgentOptions struct {
 	skipPlanningLock bool
 }
 
+// BindTurn attaches the per-turn session id and the trees the runtime opened.
+// Hosts set OpenVFS and OpenSkills. The session runtime calls BindTurn.
+func BindTurn(opts AgentOptions, id string, mount, skills *vfs.MountSession) AgentOptions {
+	opts.sessionID = id
+	opts.mountSession = mount
+	opts.skillsSession = skills
+	return opts
+}
+
 // NewTurnManager builds a TurnManager for one turn slice.
-// Durable runtimes call this; hosts use session.Runtime.
+// Session runtimes call this after BindTurn. Hosts use session.Runtime.
 func NewTurnManager(ctx context.Context, opts AgentOptions) (*TurnManager, error) {
 	if err := opts.Validate(); err != nil {
 		return nil, err
@@ -118,7 +127,7 @@ func NewTurnManager(ctx context.Context, opts AgentOptions) (*TurnManager, error
 		hostResultHooks:       maps.Clone(opts.ToolResultHooks),
 		brain:                 opts.Brain,
 		brainWriteKinds:       opts.BrainWriteKinds,
-		sessionId:             opts.SessionID,
+		sessionId:             opts.sessionID,
 		specialists:           make(map[string]*Specialist),
 		pendingToolCalls:      make(map[string]PendingToolCall),
 		context:               newModelContextManager(),
@@ -127,8 +136,8 @@ func NewTurnManager(ctx context.Context, opts AgentOptions) (*TurnManager, error
 		writeUnattended:       opts.UnattendedWrite,
 		vfsBridge:             opts.shareIndexBridge,
 	}
-	if opts.MountSession != nil {
-		sm.VFS = opts.MountSession
+	if opts.mountSession != nil {
+		sm.VFS = opts.mountSession
 	}
 	if !opts.SearchNamespace.Empty() {
 		sm.Search.SetNamespace(opts.SearchNamespace)
@@ -284,10 +293,10 @@ func skillsSource(opts AgentOptions) skills.SkillLoader {
 	if opts.SkillsLoader != nil {
 		return opts.SkillsLoader
 	}
-	if opts.SkillsSession == nil {
+	if opts.skillsSession == nil {
 		return nil
 	}
-	return skills.Loader{Session: opts.SkillsSession, Root: opts.SkillsRoot}
+	return skills.Loader{Session: opts.skillsSession, Root: opts.SkillsRoot}
 }
 
 func (a *TurnManager) initSkills(ctx context.Context) error {

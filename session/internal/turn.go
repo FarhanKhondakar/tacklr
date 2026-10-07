@@ -17,10 +17,7 @@ func ConstructTurn(ctx context.Context, agent tacklr.AgentOptions, threadID stri
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	opts := agent
-	opts.SessionID = threadID
-	opts.MountSession = ms
-	opts.SkillsSession = skills
+	opts := tacklr.BindTurn(agent, threadID, ms, skills)
 	if len(extraMCP) > 0 {
 		opts.MCPConfigs = append(append([]mcp.MCPConfig(nil), agent.MCPConfigs...), extraMCP...)
 	}

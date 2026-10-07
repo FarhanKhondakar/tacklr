@@ -52,9 +52,9 @@ Session data is three frozen planes. Do not mix them:
 
 | Plane | You pass | Holds |
 |-------|----------|--------|
-| **SnapshotStore** | `Config.Snapshots` (required; Temporal: same instance on New and NewWorker) | Window, plan, parked interrupt, `userState`, VFS recipes, session identity |
-| **Wait loop** | `temporal.New` + `NewWorker` | Scheduler: leftover tool calls, child workflows, Status |
-| **SecretStorage** | `temporal.Config.Secrets` (required; same instance on New and NewWorker) | VFS tokens. Not in snapshots. Not in Temporal history |
+| **SnapshotStore** | `Config.Snapshots` (zero: memory, kept on the runtime) | Window, plan, parked interrupt, `userState`, VFS recipes, session identity |
+| **Wait loop** | `temporal.Open` then `StartWorker` | Scheduler: leftover tool calls, child workflows, Status |
+| **SecretStorage** | `temporal.Config.Secrets` (zero: memory, kept on the runtime) | VFS tokens. Not in snapshots. Not in Temporal history |
 
 Temporal puts work-item tokens in `Secrets` before signaling. `Prompt.Auth` / `Resume.Auth` is how the host hands tokens in.
 
@@ -179,12 +179,10 @@ func main() {
 	defer c.Close()
 	cfg := temporal.Config{
 		Agent:      agent,
-		Snapshots:  session.NewMemorySnapshot(),
-		Secrets:    session.NewMemorySecretStorage(),
 		Projection: vfs.DirectProjection{},
 	}
-	rt := temporal.New(c, cfg)
-	w := temporal.NewWorker(c, cfg)
+	rt := temporal.Open(c, cfg)
+	w := rt.StartWorker()
 	if err := w.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -224,7 +222,7 @@ func openVFS(jail string, eng *brain.Engine, ns brain.Namespace) vfs.OpenVFS {
 }
 ```
 
-Same agent, SnapshotStore, and SecretStorage on Temporal. `Snapshots` and `Secrets` are required and must be one instance both processes share:
+Pass an external snapshot store and secret store when more than one process must share them. `Open` keeps those pointers, and `StartWorker` uses the same ones:
 
 ```go
 import (
@@ -237,19 +235,14 @@ c, err := tacklrtemporal.Dial(client.Options{HostPort: os.Getenv("TEMPORAL_HOST"
 if err != nil {
 	log.Fatal(err)
 }
-secrets := session.NewMemorySecretStorage() // production: Redis / Postgres / Vault
 cfg := tacklrtemporal.Config{
 	Agent:      agent,
-	Snapshots:  snaps,
-	Secrets:    secrets,
+	Snapshots:  snaps,   // production: shared store
+	Secrets:    secrets, // production: Redis / Postgres / Vault
 	Projection: vfs.DirectProjection{},
 }
-w := tacklrtemporal.NewWorker(c, cfg)
-if err := w.Start(); err != nil {
-	log.Fatal(err)
-}
-defer w.Stop()
-rt := tacklrtemporal.New(c, cfg)
+rt := tacklrtemporal.Open(c, cfg)
+w := rt.StartWorker()
 ```
 
 ACP `_tacklr/vfs/bind` still maps onto `Prompt.Auth`. The worker never sees those tokens in workflow history.

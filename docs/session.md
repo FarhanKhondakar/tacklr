@@ -18,7 +18,7 @@ Tacklr’s session API is `session.Runtime`. A `server.Protocol` maps wire frame
 | **Close** | Destroy the session, stop children, and delete its session messages |
 | **Turn locality** | Optional: keep a turn’s Temporal activities on one process (`Config.TurnLocality`) so VFS stays put |
 
-The host API is `session.Runtime`, implemented by `temporal.New`. `TurnManager` is not a host type.
+The host API is `session.Runtime`, implemented by `temporal.Open`. `TurnManager` is not a host type.
 
 Host tools on `AgentOptions.Tools` close over their clients when the host builds the agent. That closure is the client for every later turn. Rebuild the tool if the client must change. See [tools.md](tools.md).
 
@@ -30,7 +30,7 @@ cfg := tacklrtemporal.Config{
 	Snapshots: snaps,
 	Secrets:   secrets,
 }
-rt := tacklrtemporal.New(c, cfg)
+rt := tacklrtemporal.Open(c, cfg)
 id, _ := rt.CreateSession(ctx, session.CreateSession{
 	State: map[string]any{"user": "Ada", "company": "Acme"},
 })
@@ -60,20 +60,20 @@ A worker crash replays the workflow. Prompts that the turn has not absorbed yet 
 
 The host runs:
 
-1. A Tacklr Temporal worker (`NewWorker`) that registers `SessionWorkflow` and the turn activities. Do not register those yourself.
-2. A protocol process (optional) whose `session.Runtime` is `temporal.New(client, cfg)`. `temporal.Config` is the single host config for both `New` and `NewWorker`. **Snapshots** and **Secrets** are required and must be the same instances on both. Autonomous work skips the protocol and calls Runtime.
+1. `temporal.Open`, then `StartWorker`. The worker registers `SessionWorkflow` and the turn activities. Do not register those yourself.
+2. A protocol process (optional) uses that same runtime. Zero `Snapshots` and `Secrets` are in-memory stores kept on the runtime. Pass shared stores when another process must see them.
 
 ```go
 c, err := tacklrtemporal.Dial(client.Options{HostPort: temporalHost})
 cfg := tacklrtemporal.Config{
 	Agent:      agent,
-	Snapshots:  snaps,   // session record
-	Secrets:    secrets, // VFS tokens; shared with the worker
+	Snapshots:  snaps,   // optional; zero is memory
+	Secrets:    secrets, // optional; zero is memory
 	Projection: vfs.DirectProjection{},
 }
-w := tacklrtemporal.NewWorker(c, cfg)
+rt := tacklrtemporal.Open(c, cfg)
+w := rt.StartWorker()
 _ = w.Start()
-rt := tacklrtemporal.New(c, cfg)
 ```
 
 | Tacklr concept | Temporal |
@@ -91,11 +91,11 @@ rt := tacklrtemporal.New(c, cfg)
 | Leftover tools after HITL | Workflow variable (`rest`) replayed from history; not SnapshotStore |
 | Spawn specialist | Child `SessionWorkflow` (wait for started). `ParentClosePolicy` is request-cancel. Tools call `HarnessRuntime` child methods; the workflow reconciles the child ledger after each Tool activity (start, cancel, wait). Child HITL signals the parent (`ChildWaiting`) then parent `Resume` signals the child. |
 
-The worker registers `SessionWorkflow`, `Inference`, `Tool`, `CommitToolOutput`, `EmitEvent`, and `RunJob`. Inference and Tool do not publish complete, yield, or turn-ending error. The workflow commits `Status`, then `EmitEvent` publishes the matching stream event. Inline `RunSpecialist` during a Tool activity returns `JobWaitError` so the workflow waits on the child; it does not park the parent.
+The worker registers `SessionWorkflow`, `Inference`, `Tool`, `CommitToolOutput`, `EmitEvent`, and `RunJob`. Inference and Tool do not publish complete, yield, or turn-ending error. The workflow commits `Status`, then `EmitEvent` publishes the matching stream event. A blocking specialist returns the child id from the tool activity. The session loop starts that child, waits, and then writes the tool message. It does not park the parent.
 
 ## Child sessions
 
-A child is a nested Runtime session, not a host-owned supervisor. Specialist ids are `{parent}/w/{specialist}/{call}`. Named worker ids are `{parent}/j/{name}/{call}`. Both are child sessions: `Runtime.Children` / `Runtime.Jobs` list them, `Status` reports them, Cancel/Close recurse. Specialists run the same wait loop with a catalog overlay. Workers run `Config.Jobs[name]` instead of a model (Temporal: `RunJob` activity with the same retry policy as Inference/Tool). Tokens come from `SecretStorage` (child id, then parent id). Each specialist turn opens its own VFS (`OpenTurnVFS` on the child id). It does not reuse the parent’s live `MountSession`.
+A child is a nested Runtime session, not a host-owned supervisor. Specialist ids are `{parent}/w/{specialist}/{call}`. Named worker ids are `{parent}/j/{name}/{call}`. Both are child sessions: `Runtime.Children` / `Runtime.Jobs` list them, `Status` reports them, Cancel/Close recurse. Specialists run the same wait loop with that specialist's model, tools, and instructions. Workers run `Config.Jobs[name]` instead of a model (Temporal: `RunJob` activity with the same retry policy as Inference/Tool). Tokens come from `SecretStorage` (child id, then parent id). Each specialist turn opens its own VFS (`OpenTurnVFS` on the child id). It does not reuse the parent’s live `MountSession`.
 
 Register specialists on `AgentOptions.Specialists`. The model sees three tools. Host tools schedule the same jobs through `HarnessRuntime.Schedule` / `Jobs` / `CancelJob`.
 
@@ -233,7 +233,7 @@ shutdown, err := telemetry.Init(ctx, telemetry.Config{
     Insecure:     true, // local
 })
 c, err := tacklrtemporal.Dial(client.Options{HostPort: temporalHost})
-w := tacklrtemporal.NewWorker(c, cfg) // same Config as temporal.New, including Secrets
+w := rt.StartWorker()
 ```
 
 Span attributes are closed enums and ids (`tacklr.runtime`, `tacklr.turn.kind`, `tacklr.agent_id`, `tacklr.outcome`). Logs carry prompt length, resume counts, retries, and error text.

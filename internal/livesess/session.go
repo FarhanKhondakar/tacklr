@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/internal/durtest"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // Session is a Temporal Docker session for tests (Prompt / Subscribe / Resume).
@@ -23,11 +23,8 @@ func StartSession(t testing.TB, opts tacklr.AgentOptions) *Session {
 	if opts.MaxWindowSize == 0 {
 		opts.MaxWindowSize = 8192
 	}
-	sessionID := session.SessionID(opts.SessionID)
-	opts.SessionID = ""
-	opts.MountSession = nil
 	rt := Runtime(t, opts)
-	id, err := rt.CreateSession(t.Context(), session.CreateSession{SessionID: sessionID})
+	id, err := rt.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}

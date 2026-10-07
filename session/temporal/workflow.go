@@ -17,7 +17,7 @@ import (
 )
 
 // SessionWorkflow is the Temporal type name for the session wait loop.
-// NewWorker registers it. Hosts call session.Runtime, not this function.
+// StartWorker registers it. Hosts call session.Runtime, not this function.
 func SessionWorkflow(ctx workflow.Context, in workflowInput) (string, error) {
 	logger := workflow.GetLogger(ctx)
 	if _, err := workflowstreams.NewWorkflowStream(ctx, nil); err != nil {
@@ -217,6 +217,10 @@ func (w *wfExec) waitActivity(activity any, in, out any) error {
 	sel.Select(w.ctx)
 	for w.cancelCh.ReceiveAsync(nil) {
 	}
+	if turnCanceled(w.ctx, err) {
+		for w.promptCh.ReceiveAsync(nil) {
+		}
+	}
 	if err == nil || turnCanceled(w.ctx, err) {
 		if err != nil {
 			return context.Canceled
@@ -290,6 +294,8 @@ func (w *wfExec) Recv() session.Wake {
 		})
 		sel.AddReceive(w.cancelCh, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, nil)
+			for w.promptCh.ReceiveAsync(nil) {
+			}
 			out.Kind = session.WakeCancel
 		})
 		sel.AddReceive(w.closeCh, func(c workflow.ReceiveChannel, more bool) {

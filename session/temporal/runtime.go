@@ -1,7 +1,7 @@
 // Package temporal is the Temporal adapter for session.Runtime.
-// Hosts use Dial, New, and NewWorker with the same Config (including
-// Snapshots and Secrets). NewWorker registers SessionWorkflow and the
-// turn activities.
+// Hosts use Dial and Open. Zero Snapshots and Secrets use in-memory
+// stores kept on the runtime. StartWorker registers SessionWorkflow
+// and the turn activities against those stores.
 package temporal
 
 import (
@@ -45,6 +45,7 @@ type Runtime struct {
 	heartbeatTimeout    time.Duration
 	activityAttempts    int32
 	secrets             session.SecretStorage
+	projection          vfs.Projection
 	jobs                map[string]session.JobHandler
 
 	mu     sync.Mutex
@@ -57,14 +58,14 @@ const (
 	defaultActivityAttempts = 3
 )
 
-// Config is the single Temporal host config for New and NewWorker.
+// Config is the host config for Open. StartWorker uses the stores Open kept.
 type Config struct {
-	// Agent is the one agent this worker runs. Specialists on Agent.Options
-	// are assistants it can spawn. Jobs are named handlers, not agents.
+	// Agent is the one agent this runtime runs. Specialists on Agent are
+	// assistants it can spawn. Jobs are named handlers, not agents.
 	Agent     tacklr.AgentOptions
 	TaskQueue string
-	// Snapshots is the session record. Required. New and NewWorker must share
-	// the same instance. Tokens never go here.
+	// Snapshots is the session record. Zero uses an in-memory store.
+	// Tokens never go here. StartWorker uses this same store.
 	Snapshots  session.SnapshotStore
 	Fallback   session.EventLog
 	Projection vfs.Projection
@@ -80,11 +81,12 @@ type Config struct {
 	// error, a model refusal, or a stale checkpoint. Zero is 3. 1 means no
 	// retry. Any other activity error stops on the first attempt.
 	ActivityAttempts int32
-	// Secrets holds work-item credentials for activities. Required. New and
-	// NewWorker must share the same instance. Tokens never enter event history.
+	// Secrets holds work-item credentials for activities. Zero uses an
+	// in-memory store. StartWorker uses this same store. Tokens never
+	// enter event history.
 	Secrets session.SecretStorage
-	// Jobs are named background workers Schedule can start. Specialist
-	// names on the catalog take precedence.
+	// Jobs are named background workers Schedule can start. A specialist
+	// of the same name takes precedence.
 	Jobs map[string]session.JobHandler
 }
 
@@ -95,17 +97,14 @@ func (c Config) queue() string {
 	return c.TaskQueue
 }
 
-func requireCfg(cfg Config) {
-	opts := cfg.Agent
-	if opts.SessionID != "" || opts.MountSession != nil || opts.SkillsSession != nil {
-		panic("temporal: Agent cannot set SessionID, MountSession, or SkillsSession; the runtime injects those per turn")
-	}
+func applyDefaults(cfg Config) Config {
 	if cfg.Snapshots == nil {
-		panic("temporal: Snapshots is required")
+		cfg.Snapshots = session.NewMemorySnapshot()
 	}
 	if cfg.Secrets == nil {
-		panic("temporal: Secrets is required")
+		cfg.Secrets = session.NewMemorySecretStorage()
 	}
+	return cfg
 }
 
 func (c Config) eventLog() session.EventLog {
@@ -115,13 +114,14 @@ func (c Config) eventLog() session.EventLog {
 	return session.NewMemoryEventLog()
 }
 
-// New constructs a Temporal Runtime. The host must also run NewWorker on the
-// same Config, including the same Snapshots and Secrets stores.
-func New(c client.Client, cfg Config) *Runtime {
+// Open constructs a Temporal Runtime. Zero Snapshots and Secrets use
+// in-memory stores kept on the runtime. StartWorker registers the worker
+// against those same stores.
+func Open(c client.Client, cfg Config) *Runtime {
 	if c == nil {
 		panic("temporal: Client is required")
 	}
-	requireCfg(cfg)
+	cfg = applyDefaults(cfg)
 	return &Runtime{
 		client:              c,
 		taskQueue:           cfg.queue(),
@@ -134,6 +134,7 @@ func New(c client.Client, cfg Config) *Runtime {
 		heartbeatTimeout:    cmp.Or(cfg.HeartbeatTimeout, defaultHeartbeatTimeout),
 		activityAttempts:    cmp.Or(cfg.ActivityAttempts, defaultActivityAttempts),
 		secrets:             cfg.Secrets,
+		projection:          cfg.Projection,
 		jobs:                cfg.Jobs,
 		closed:              make(map[session.SessionID]struct{}),
 	}
@@ -423,28 +424,26 @@ func Dial(opts client.Options) (client.Client, error) {
 	return client.Dial(opts)
 }
 
-// NewWorker returns a Temporal worker with EnableSessionWorker and
-// SessionWorkflow plus Inference, Tool, CommitToolOutput, and EmitEvent
-// activities. Pass the same Config as New, including Snapshots and Secrets.
-func NewWorker(c client.Client, cfg Config) worker.Worker {
-	requireCfg(cfg)
-	w := worker.New(c, cfg.queue(), worker.Options{
+// StartWorker returns a Temporal worker for this runtime. It registers
+// SessionWorkflow and the turn activities against the runtime's snapshot
+// store, secret store, and agent.
+func (r *Runtime) StartWorker() worker.Worker {
+	w := worker.New(r.client, r.taskQueue, worker.Options{
 		EnableSessionWorker:               true,
 		MaxConcurrentSessionExecutionSize: 1000,
 	})
-	proj := cfg.Projection
+	proj := r.projection
 	if proj == nil {
 		proj = vfs.FuseProjection{}
 	}
-	fallback := cfg.eventLog()
 	acts := &activities{
-		Agent:          cfg.Agent,
-		Snapshots:      cfg.Snapshots,
+		Agent:          r.agent,
+		Snapshots:      r.snapshots,
 		Projection:     proj,
-		Fallback:       fallback,
-		DisableStreams: cfg.DisableStreams,
-		Secrets:        cfg.Secrets,
-		Jobs:           cfg.Jobs,
+		Fallback:       r.fallback,
+		DisableStreams: r.disableStreams,
+		Secrets:        r.secrets,
+		Jobs:           r.jobs,
 	}
 	w.RegisterWorkflow(SessionWorkflow)
 	w.RegisterActivity(acts)

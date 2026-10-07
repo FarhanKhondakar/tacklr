@@ -39,7 +39,7 @@ func TestHandoff_savesSessionMessagesForSearch(t *testing.T) {
 		callID    = "call-session-1"
 	)
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:       sessionID,
+		sessionID:       sessionID,
 		MaxWindowSize:   8192,
 		SearchNamespace: ns,
 		Brain:           eng,
@@ -108,7 +108,7 @@ func TestAbsorb_retainsCompressedEpisode(t *testing.T) {
 	ns := mustNS(t, "org", "acme")
 	const token = "unique-retain-compress-token"
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:       "sess-compress",
+		sessionID:       "sess-compress",
 		MaxWindowSize:   40,
 		ContextPolicy:   ContextPolicy{PressureRatio: 0.5, CompressFraction: 0.5},
 		SearchNamespace: ns,
@@ -141,7 +141,7 @@ func TestHandoff_sessionMessageSaveErrorKeepsWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:       "sess-save-fail",
+		sessionID:       "sess-save-fail",
 		MaxWindowSize:   8192,
 		SearchNamespace: mustNS(t, "org", "acme"),
 		Brain:           eng,
@@ -169,7 +169,7 @@ func TestHandoff_sessionMessageSaveErrorKeepsWindow(t *testing.T) {
 
 func TestHandoff_nilBrainReplacesWindow(t *testing.T) {
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:     "sess-no-brain",
+		sessionID:     "sess-no-brain",
 		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
 	})
@@ -208,7 +208,7 @@ func TestSpecialist_retainsResultEpisode(t *testing.T) {
 	ns := mustNS(t, "org", "acme")
 	const token = "unique-retain-specialist-token"
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:       "sess-spec",
+		sessionID:       "sess-spec",
 		MaxWindowSize:   8192,
 		SearchNamespace: ns,
 		Brain:           eng,
