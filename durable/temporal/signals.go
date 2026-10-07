@@ -3,8 +3,6 @@ package temporal
 import (
 	"time"
 
-	"github.com/ryanaldo34/tacklr"
-
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/mcp"
 )
@@ -51,25 +49,8 @@ type workflowInput struct {
 	State map[string]any
 }
 
-// promptSignal is the Prompt signal. Auth is secret-free on the wire.
-type promptSignal struct {
-	Text        string
-	UserMessage *tacklr.Message
-	AgentID     string
-	MCPServers  []mcp.MCPConfig
-	Auth        durable.AuthContext
-	State       map[string]any
-}
-
-// resumeSignal is the Resume signal. Auth is secret-free on the wire.
-type resumeSignal struct {
-	Responses map[string][]byte
-	Auth      durable.AuthContext
-	State     map[string]any
-}
-
 type waitSignal struct {
 	kind   string
-	prompt promptSignal
-	resume resumeSignal
+	prompt durable.PromptIn
+	resume durable.ResumeIn
 }

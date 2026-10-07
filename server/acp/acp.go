@@ -42,6 +42,21 @@ func stopReasonFromError(err error) (reason string, ok bool) {
 	}
 }
 
+func stopReasonFromText(msg string) (reason string, ok bool) {
+	switch {
+	case msg == context.Canceled.Error():
+		return stopReasonCancelled, true
+	case strings.Contains(msg, tacklr.ErrModelRefused.Error()):
+		return stopReasonRefusal, true
+	case strings.Contains(msg, tacklr.ErrMaxTokens.Error()):
+		return stopReasonMaxTokens, true
+	case strings.Contains(msg, tacklr.ErrMaxTurnRequests.Error()):
+		return stopReasonMaxTurnRequests, true
+	default:
+		return "", false
+	}
+}
+
 func acpPromptResult(stopReason string) map[string]string {
 	return map[string]string{"stopReason": stopReason}
 }
@@ -376,9 +391,15 @@ func presentationToACP(threadID string, ev tacklr.StreamEvent) [][]byte {
 			})
 			return [][]byte{b}
 		}
-		msg := "internal error"
-		if presented.Error != nil {
-			msg = presented.Error.Error()
+		if reason, ok := stopReasonFromText(presented.ErrorText); ok {
+			b, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "id": presented.TurnID, "result": acpPromptResult(reason),
+			})
+			return [][]byte{b}
+		}
+		msg := presented.ErrorText
+		if msg == "" {
+			msg = "internal error"
 		}
 		b, _ := json.Marshal(map[string]any{
 			"jsonrpc": "2.0", "id": presented.TurnID,
@@ -454,6 +475,8 @@ func presentStreamEvent(event tacklr.StreamEvent) presentationEvent {
 	}
 	if event.Error != nil {
 		presented.ErrorText = event.Error.Error()
+	} else if event.Fail != "" {
+		presented.ErrorText = event.Fail
 	}
 	return presented
 }

@@ -8,212 +8,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/network"
-	"github.com/testcontainers/testcontainers-go/wait"
 	enumspb "go.temporal.io/api/enums/v1"
-	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
-	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	"github.com/ryanaldo34/tacklr/internal/durtest"
+	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
-const (
-	temporalImage   = "temporalio/server:latest"
-	adminToolsImage = "temporalio/admin-tools:latest"
-	temporalPGImage = "tacklr-pg-brain:test"
-)
-
-var (
-	liveSeq     atomic.Int64
-	liveMu      sync.Mutex
-	liveCtr     testcontainers.Container
-	livePG      testcontainers.Container
-	liveNet     *testcontainers.DockerNetwork
-	liveAddr    string
-	liveStart   error
-	liveStarted bool
-)
+var liveSeq atomic.Int64
 
 func liveHostPort(t *testing.T) string {
 	t.Helper()
-	liveMu.Lock()
-	defer liveMu.Unlock()
-	if !liveStarted {
-		liveStarted = true
-		liveStart = startTemporal()
-	}
-	if liveStart != nil {
-		t.Skipf("Temporal unavailable: %v", liveStart)
-	}
-	return liveAddr
-}
-
-func stopLive() {
-	if liveCtr != nil {
-		_ = liveCtr.Terminate(context.Background())
-		liveCtr = nil
-	}
-	if livePG != nil {
-		_ = livePG.Terminate(context.Background())
-		livePG = nil
-	}
-	if liveNet != nil {
-		_ = liveNet.Remove(context.Background())
-		liveNet = nil
-	}
-}
-
-func startTemporal() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	nw, err := network.New(ctx)
-	if err != nil {
-		return err
-	}
-	liveNet = nw
-	pg, err := postgres.Run(ctx, temporalPGImage,
-		postgres.WithDatabase("temporal"),
-		postgres.WithUsername("temporal"),
-		postgres.WithPassword("temporal"),
-		postgres.BasicWaitStrategies(),
-		network.WithNetwork([]string{"postgresql"}, nw),
-	)
-	if err != nil {
-		stopLive()
-		return fmt.Errorf("%w (build image: make brain-pg-image)", err)
-	}
-	livePG = pg
-	if code, _, err := pg.Exec(ctx, []string{"psql", "-U", "temporal", "-d", "temporal", "-c", "CREATE DATABASE temporal_visibility;"}); err != nil || code != 0 {
-		stopLive()
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("create temporal_visibility: exit %d", code)
-	}
-	admin, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:      adminToolsImage,
-			Env:        map[string]string{"SQL_PASSWORD": "temporal"},
-			Entrypoint: []string{"/bin/sh", "-c"},
-			Cmd: []string{`set -eu
-temporal-sql-tool --plugin postgres12 --ep postgresql -u temporal -p 5432 --db temporal setup-schema -v 0.0
-temporal-sql-tool --plugin postgres12 --ep postgresql -u temporal -p 5432 --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
-temporal-sql-tool --plugin postgres12 --ep postgresql -u temporal -p 5432 --db temporal_visibility setup-schema -v 0.0
-temporal-sql-tool --plugin postgres12 --ep postgresql -u temporal -p 5432 --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
-`},
-			Networks:   []string{nw.Name},
-			WaitingFor: wait.ForExit().WithExitTimeout(time.Minute),
-		},
-		Started: true,
-	})
-	if err != nil {
-		stopLive()
-		return err
-	}
-	st, stErr := admin.State(ctx)
-	_ = admin.Terminate(context.Background())
-	if stErr != nil || st.ExitCode != 0 {
-		stopLive()
-		if stErr != nil {
-			return stErr
-		}
-		return fmt.Errorf("temporal schema setup exit %d", st.ExitCode)
-	}
-	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        temporalImage,
-			ExposedPorts: []string{"7233/tcp"},
-			Networks:     []string{nw.Name},
-			Files: []testcontainers.ContainerFile{{
-				Reader:            strings.NewReader("{}\n"),
-				ContainerFilePath: "/etc/temporal/config/dynamicconfig/docker.yaml",
-				FileMode:          0o644,
-			}},
-			Env: map[string]string{
-				"DB":                   "postgres12",
-				"DB_PORT":              "5432",
-				"DBNAME":               "temporal",
-				"VISIBILITY_DBNAME":    "temporal_visibility",
-				"POSTGRES_USER":        "temporal",
-				"POSTGRES_PWD":         "temporal",
-				"POSTGRES_SEEDS":       "postgresql",
-				"BIND_ON_IP":           "0.0.0.0",
-				"TEMPORAL_ADDRESS":     "127.0.0.1:7233",
-				"TEMPORAL_CLI_ADDRESS": "127.0.0.1:7233",
-			},
-			WaitingFor: wait.ForListeningPort("7233/tcp").WithStartupTimeout(2 * time.Minute),
-		},
-		Started: true,
-	})
-	if err != nil {
-		stopLive()
-		return err
-	}
-	addr, err := ctr.PortEndpoint(ctx, "7233/tcp", "")
-	if err != nil {
-		_ = ctr.Terminate(context.Background())
-		stopLive()
-		return err
-	}
-	deadline := time.Now().Add(time.Minute)
-	var last error
-	for {
-		c, dialErr := client.Dial(client.Options{HostPort: addr})
-		if dialErr == nil {
-			hctx, hcancel := context.WithTimeout(ctx, 2*time.Second)
-			_, last = c.CheckHealth(hctx, &client.CheckHealthRequest{})
-			hcancel()
-			c.Close()
-			if last == nil {
-				break
-			}
-		} else {
-			last = dialErr
-		}
-		if time.Now().After(deadline) {
-			_ = ctr.Terminate(context.Background())
-			stopLive()
-			return last
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	ns, err := client.NewNamespaceClient(client.Options{HostPort: addr})
-	if err != nil {
-		_ = ctr.Terminate(context.Background())
-		stopLive()
-		return err
-	}
-	err = ns.Register(ctx, &workflowservice.RegisterNamespaceRequest{
-		Namespace:                        "default",
-		WorkflowExecutionRetentionPeriod: durationpb.New(24 * time.Hour),
-	})
-	ns.Close()
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		_ = ctr.Terminate(context.Background())
-		stopLive()
-		return err
-	}
-	liveCtr = ctr
-	liveAddr = addr
-	return nil
+	return temporaldocker.HostPort(t)
 }
 
 type liveStack struct {
@@ -236,8 +55,8 @@ func newLiveStack(t *testing.T, cat durable.Catalog) *liveStack {
 	t.Cleanup(c.Close)
 	n := liveSeq.Add(1)
 	tq := fmt.Sprintf("tacklr-live-%d", n)
-	snaps := inprocess.NewMemorySnapshot()
-	log := inprocess.NewMemoryEventLog()
+	snaps := durable.NewMemorySnapshot()
+	log := durable.NewMemoryEventLog()
 	secrets := durable.NewMemorySecretStorage()
 	cfg := Config{Catalog: cat, TaskQueue: tq, Snapshots: snaps, Fallback: log, Projection: vfs.DirectProjection{}, Secrets: secrets}
 	rt := New(c, cfg)
@@ -274,9 +93,7 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	_ = shutdown(context.Background())
-	liveMu.Lock()
-	stopLive()
-	liveMu.Unlock()
+	temporaldocker.Stop()
 	os.Exit(code)
 }
 
@@ -870,14 +687,14 @@ func TestNew_panicsWithoutClientOrCatalog(t *testing.T) {
 		Options: tacklr.AgentOptions{Model: &testkit.ScriptedModel{}, Config: tacklr.Config{MaxWindowSize: 8192}},
 	})
 	stub := &struct{ client.Client }{}
-	snaps := inprocess.NewMemorySnapshot()
+	snaps := durable.NewMemorySnapshot()
 	secrets := durable.NewMemorySecretStorage()
 	mustPanic(t, func() { New(nil, Config{Catalog: cat, Snapshots: snaps, Secrets: secrets}) })
 	mustPanic(t, func() { New(stub, Config{}) })
 	mustPanic(t, func() { New(stub, Config{Catalog: cat}) })
 	mustPanic(t, func() { New(stub, Config{Catalog: cat, Snapshots: snaps}) })
 	mustPanic(t, func() { NewWorker(stub, Config{}) })
-	log := inprocess.NewMemoryEventLog()
+	log := durable.NewMemoryEventLog()
 	rt := New(stub, Config{Catalog: cat, Snapshots: snaps, Secrets: secrets, DisableStreams: true, TurnLocality: time.Minute, Fallback: log})
 	if rt.taskQueue != "tacklr" || !rt.disableStreams {
 		t.Fatalf("defaults tq=%q streams=%v", rt.taskQueue, rt.disableStreams)
@@ -938,8 +755,8 @@ func TestRuntime_promptFailsWhenVaultSealed(t *testing.T) {
 		Options: tacklr.AgentOptions{Model: &testkit.ScriptedModel{}, Config: tacklr.Config{MaxWindowSize: 8192}},
 	})
 	rt := New(nopWorkflowClient{}, Config{
-		Catalog: cat, Snapshots: inprocess.NewMemorySnapshot(), Secrets: failPutSecrets{}, DisableStreams: true,
-		Fallback: inprocess.NewMemoryEventLog(),
+		Catalog: cat, Snapshots: durable.NewMemorySnapshot(), Secrets: failPutSecrets{}, DisableStreams: true,
+		Fallback: durable.NewMemoryEventLog(),
 	})
 	err := rt.Prompt(t.Context(), "s", durable.Prompt{
 		Text: "x",
@@ -964,8 +781,8 @@ func TestRuntime_closeDeletesSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := New(nopWorkflowClient{}, Config{
-		Catalog: cat, Snapshots: inprocess.NewMemorySnapshot(), Secrets: store, DisableStreams: true,
-		Fallback: inprocess.NewMemoryEventLog(),
+		Catalog: cat, Snapshots: durable.NewMemorySnapshot(), Secrets: store, DisableStreams: true,
+		Fallback: durable.NewMemoryEventLog(),
 	})
 	if err := rt.Close(t.Context(), "s"); err != nil {
 		t.Fatal(err)
@@ -1038,7 +855,7 @@ func (l *retryLog) Append(ctx context.Context, id durable.SessionID, topic strin
 func newActs(cat *durable.MemoryCatalog, log durable.EventLog, disableStreams bool) *activities {
 	return &activities{
 		Catalog:        cat,
-		Snapshots:      inprocess.NewMemorySnapshot(),
+		Snapshots:      durable.NewMemorySnapshot(),
 		Projection:     vfs.DirectProjection{},
 		Fallback:       log,
 		DisableStreams: disableStreams,

@@ -103,8 +103,7 @@ func TestPostgresWireStore_acpLoadAfterRestart(t *testing.T) {
 		t.Fatal("missing sessionId")
 	}
 
-	r2 := newTestRuntime(t, strategy, durable.AgentSpec{})
-	s2 := newACPTestServerWithWire(t, r2, wire)
+	s2 := newACPTestServerWithWire(t, r1, wire)
 	rec2 := s2.rpc(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"` + sessionID + `","cwd":"/proj"}}`)
 	if acpRPCResult(t, rec2)["sessionId"] != sessionID {
 		t.Fatalf("load: %s", rec2.Body.String())

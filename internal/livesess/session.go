@@ -7,14 +7,12 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	"github.com/ryanaldo34/tacklr/internal/durtest"
-	"github.com/ryanaldo34/tacklr/vfs"
 )
 
-// Session is an in-process durable session for tests (Prompt / Subscribe / Resume).
+// Session is a Temporal Docker session for tests (Prompt / Subscribe / Resume).
 type Session struct {
-	Runtime *inprocess.Runtime
+	Runtime durable.Runtime
 	ID      durable.SessionID
 	sub     durable.Subscription
 }
@@ -30,7 +28,7 @@ func StartSession(t testing.TB, opts tacklr.AgentOptions) *Session {
 	opts.MountSession = nil
 	cat := durable.NewCatalog("default")
 	cat.Register("default", durable.AgentSpec{Options: opts})
-	rt := inprocess.New(inprocess.Config{Catalog: cat, Snapshots: inprocess.NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
+	rt := Runtime(t, cat)
 	id, err := rt.CreateSession(t.Context(), durable.CreateSession{AgentID: "default", SessionID: sessionID})
 	if err != nil {
 		t.Fatal(err)

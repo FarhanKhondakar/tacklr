@@ -18,7 +18,7 @@ func TestApplyAuthUpsertsRecipesAndRecordsSourceIDs(t *testing.T) {
 		Auth:     vfs.Credential{Token: "secret"},
 		Writable: true,
 	}}}
-	got := ApplyAuth(nil, auth)
+	got := durable.ApplyAuth(nil, auth)
 	if len(got) != 1 {
 		t.Fatalf("len=%d", len(got))
 	}
@@ -41,11 +41,11 @@ func TestApplyAuthDropByAliasThenProvider(t *testing.T) {
 		{Provider: "gdrive", Alias: "docs", Params: map[string]string{vfs.ParamName: "docs"}},
 		{Provider: "local", Alias: "scratch", Params: map[string]string{vfs.ParamName: "scratch"}},
 	}
-	got := ApplyAuth(start, durable.AuthContext{Drop: []string{"docs"}})
+	got := durable.ApplyAuth(start, durable.AuthContext{Drop: []string{"docs"}})
 	if len(got) != 1 || got[0].Alias != "scratch" {
 		t.Fatalf("after alias drop: %+v", got)
 	}
-	got = ApplyAuth(got, durable.AuthContext{Drop: []string{"local"}})
+	got = durable.ApplyAuth(got, durable.AuthContext{Drop: []string{"local"}})
 	if len(got) != 0 {
 		t.Fatalf("after provider drop: %+v", got)
 	}
@@ -63,7 +63,7 @@ func TestBindingsForTurnUsesCachedRecipePlusProviderToken(t *testing.T) {
 		Provider: "gdrive",
 		Auth:     vfs.Credential{Token: "tok-2"},
 	}}}
-	binds := BindingsForTurn(recipes, auth)
+	binds := durable.BindingsForTurn(recipes, auth)
 	if len(binds) != 1 {
 		t.Fatalf("len=%d", len(binds))
 	}
@@ -76,7 +76,7 @@ func TestBindingsForTurnUsesCachedRecipePlusProviderToken(t *testing.T) {
 	if !binds[0].Writable {
 		t.Fatal("want writable from recipe")
 	}
-	if got := BindingsForTurn(recipes, durable.AuthContext{}); len(got) != 0 {
+	if got := durable.BindingsForTurn(recipes, durable.AuthContext{}); len(got) != 0 {
 		t.Fatalf("want no bindings without token, got %+v", got)
 	}
 }
@@ -88,7 +88,7 @@ func TestApplyAuthKeepsPriorSourceIDsOnRebind(t *testing.T) {
 		Params:    map[string]string{vfs.ParamName: "docs", vfs.ParamFolderID: "fld-1"},
 		SourceIDs: []string{vfs.ParamFolderID + ":fld-1", "file:abc"},
 	}}
-	got := ApplyAuth(start, durable.AuthContext{Bindings: []vfs.Binding{{
+	got := durable.ApplyAuth(start, durable.AuthContext{Bindings: []vfs.Binding{{
 		Provider: "gdrive",
 		Params:   map[string]string{vfs.ParamName: "docs", vfs.ParamFolderID: "fld-1"},
 		Auth:     vfs.Credential{Token: "x"},

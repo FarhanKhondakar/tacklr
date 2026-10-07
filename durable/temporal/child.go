@@ -143,7 +143,7 @@ func cancelOne(ctx workflow.Context, spawned *[]childRun, id durable.SessionID) 
 func applyChildIntent(
 	ctx, sessionCtx workflow.Context,
 	spawned *[]childRun,
-	tout toolOutput,
+	tout durable.ToolOutput,
 	in workflowInput,
 	agentID string,
 	mounts []durable.MountRecipe,
@@ -236,7 +236,10 @@ type activityChildren struct {
 	awaitID  durable.SessionID
 }
 
-func (a *activityChildren) Schedule(_ context.Context, job tacklr.JobRequest, callID string) (tacklr.Job, error) {
+func (a *activityChildren) Schedule(ctx context.Context, job tacklr.JobRequest, callID string) (tacklr.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return tacklr.Job{}, err
+	}
 	name, task, err := adapter.NormalizeSpawn(job.Name, job.Task)
 	if err != nil {
 		return tacklr.Job{}, err
@@ -277,7 +280,10 @@ func (a *activityChildren) Jobs() []tacklr.Job {
 	return out
 }
 
-func (a *activityChildren) CancelJob(_ context.Context, id string) error {
+func (a *activityChildren) CancelJob(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sid := durable.SessionID(id)
 	if sid != a.jobID && !slices.Contains(a.known, sid) {
 		return adapter.UnknownChild(id)
@@ -286,11 +292,11 @@ func (a *activityChildren) CancelJob(_ context.Context, id string) error {
 	return nil
 }
 
-func (a *activityChildren) RunSpecialist(_ context.Context, name, task, callID string) (string, error) {
+func (a *activityChildren) RunSpecialist(ctx context.Context, name, task, callID string) (string, error) {
 	if !adapter.HasSpecialist(a.catalog, a.agentID, name) {
 		return "", fmt.Errorf("%w: %s", tacklr.ErrNotFound, name)
 	}
-	job, err := a.Schedule(context.Background(), tacklr.JobRequest{Name: name, Task: task}, callID)
+	job, err := a.Schedule(ctx, tacklr.JobRequest{Name: name, Task: task}, callID)
 	if err != nil {
 		return "", err
 	}

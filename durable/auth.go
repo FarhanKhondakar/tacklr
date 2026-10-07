@@ -1,11 +1,10 @@
-package adapter
+package durable
 
 import (
 	"maps"
 	"slices"
 	"strings"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -19,7 +18,7 @@ var sourceParamKeys = []string{
 // ApplyAuth updates cached recipes from a work-item AuthContext.
 // Drop is applied first. Bindings with an alias
 // upsert that recipe. Tokens are not stored on the returned recipes.
-func ApplyAuth(recipes []durable.MountRecipe, auth durable.AuthContext) []durable.MountRecipe {
+func ApplyAuth(recipes []MountRecipe, auth AuthContext) []MountRecipe {
 	out := cloneRecipes(recipes)
 	if len(auth.Drop) > 0 {
 		filtered := out[:0]
@@ -55,7 +54,7 @@ func ApplyAuth(recipes []durable.MountRecipe, auth durable.AuthContext) []durabl
 
 // BindingsForTurn builds the secret-bearing mounts for one activity/turn.
 // Each cached recipe is included when a token for its provider is on auth.
-func BindingsForTurn(recipes []durable.MountRecipe, auth durable.AuthContext) []vfs.Binding {
+func BindingsForTurn(recipes []MountRecipe, auth AuthContext) []vfs.Binding {
 	byProvider, byAlias := tokenIndex(auth)
 	out := make([]vfs.Binding, 0, len(recipes))
 	for _, r := range recipes {
@@ -79,10 +78,10 @@ func BindingsForTurn(recipes []durable.MountRecipe, auth durable.AuthContext) []
 	return out
 }
 
-func recipeFromBinding(b vfs.Binding, alias string) durable.MountRecipe {
+func recipeFromBinding(b vfs.Binding, alias string) MountRecipe {
 	params := cloneParams(b.Params)
 	params[vfs.ParamName] = alias
-	return durable.MountRecipe{
+	return MountRecipe{
 		Provider:  b.Provider,
 		Alias:     alias,
 		Params:    params,
@@ -127,7 +126,7 @@ func bindingAlias(b vfs.Binding) string {
 	return strings.TrimPrefix(point, "/")
 }
 
-func dropRecipe(r durable.MountRecipe, drop []string) bool {
+func dropRecipe(r MountRecipe, drop []string) bool {
 	for _, d := range drop {
 		d = strings.TrimSpace(d)
 		if r.Alias == d || r.Provider == d {
@@ -137,7 +136,7 @@ func dropRecipe(r durable.MountRecipe, drop []string) bool {
 	return false
 }
 
-func tokenIndex(auth durable.AuthContext) (byProvider, byAlias map[string]vfs.Credential) {
+func tokenIndex(auth AuthContext) (byProvider, byAlias map[string]vfs.Credential) {
 	byProvider = make(map[string]vfs.Credential)
 	byAlias = make(map[string]vfs.Credential)
 	for _, b := range auth.Bindings {
@@ -162,11 +161,11 @@ func cloneParams(p map[string]string) map[string]string {
 	return out
 }
 
-func cloneRecipes(in []durable.MountRecipe) []durable.MountRecipe {
+func cloneRecipes(in []MountRecipe) []MountRecipe {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]durable.MountRecipe, len(in))
+	out := make([]MountRecipe, len(in))
 	for i, r := range in {
 		out[i] = r
 		out[i].Params = maps.Clone(r.Params)

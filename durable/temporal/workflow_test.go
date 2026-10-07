@@ -18,7 +18,6 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -49,15 +48,15 @@ func TestSessionWorkflow_workerSessionFailedEndsTurn(t *testing.T) {
 			},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	acts := newActs(cat, fallback, true)
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(acts)
-	env.OnActivity(acts.Tool, mock.Anything, mock.Anything).Return(toolOutput{}, workflow.ErrSessionFailed)
+	env.OnActivity(acts.Tool, mock.Anything, mock.Anything).Return(durable.ToolOutput{}, workflow.ErrSessionFailed)
 
 	id := durable.SessionID("sess-session-failed")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -88,13 +87,13 @@ func TestSessionWorkflow_inferenceRefusedFailsTurn(t *testing.T) {
 			Config: tacklr.Config{MaxWindowSize: 8192},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 
 	id := durable.SessionID("sess-model-refused")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -139,13 +138,13 @@ func TestSessionWorkflow_permanentInferenceDoesNotRetry(t *testing.T) {
 			Config: tacklr.Config{MaxWindowSize: 8192},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 
 	id := durable.SessionID("sess-permanent")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -196,13 +195,13 @@ func TestSessionWorkflow_activityRetryThenCompletes(t *testing.T) {
 	cat.Register("default", durable.AgentSpec{
 		Options: tacklr.AgentOptions{Model: model, Config: tacklr.Config{MaxWindowSize: 8192}},
 	})
-	fallback := &retryLog{EventLog: inprocess.NewMemoryEventLog()}
+	fallback := &retryLog{EventLog: durable.NewMemoryEventLog()}
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 
 	id := durable.SessionID("sess-retry")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -263,16 +262,16 @@ func TestSessionWorkflow_authExpiredYieldThenResume(t *testing.T) {
 	cat.Register("default", durable.AgentSpec{
 		Options: tacklr.AgentOptions{Model: model, Config: tacklr.Config{MaxWindowSize: 8192}, Tools: []*tacklr.Tool{cloud}},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 
 	id := durable.SessionID("sess-auth")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "read"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "read"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalResume, resumeSignal{Responses: map[string][]byte{"c1": []byte(`{}`)}})
+		env.SignalWorkflow(signalResume, durable.ResumeIn{Responses: map[string][]byte{"c1": []byte(`{}`)}})
 	}, 20*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -347,17 +346,17 @@ func TestSessionWorkflow_parallelBatchHitlRunsRemainder(t *testing.T) {
 			},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 
 	id := durable.SessionID("sess-parallel-hitl")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "batch"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "batch"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		payload, _ := json.Marshal(map[string]string{"optionId": "allow-once"})
-		env.SignalWorkflow(signalResume, resumeSignal{Responses: map[string][]byte{"fc_gate": payload}})
+		env.SignalWorkflow(signalResume, durable.ResumeIn{Responses: map[string][]byte{"fc_gate": payload}})
 	}, 20*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -396,13 +395,13 @@ func TestSessionWorkflow_hitlCancel(t *testing.T) {
 	cat.Register("default", durable.AgentSpec{
 		Options: tacklr.AgentOptions{Model: model, Config: tacklr.Config{MaxWindowSize: 8192}},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 
 	id := durable.SessionID("sess-hitl-cancel")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "ask"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "ask"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalCancel, nil)
@@ -474,11 +473,11 @@ func TestSessionWorkflow_mixedBatchPairsBeforeNextRound(t *testing.T) {
 			},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	id := durable.SessionID("sess-mixed-spawn")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"}) }, time.Millisecond)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 120*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id, AgentID: "default"})
 	if err := env.GetWorkflowError(); err != nil {
@@ -554,7 +553,7 @@ func TestSessionWorkflow_asyncSpawnDoesNotWaitForChild(t *testing.T) {
 			}},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	var childStarted atomic.Bool
@@ -562,7 +561,7 @@ func TestSessionWorkflow_asyncSpawnDoesNotWaitForChild(t *testing.T) {
 		childStarted.Store(true)
 	})
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -653,12 +652,12 @@ func TestSessionWorkflow_listChildren(t *testing.T) {
 			}},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	env.OnRequestCancelExternalWorkflow(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	id := durable.SessionID("sess-list-children")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"}) }, time.Millisecond)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 120*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id, AgentID: "default"})
 	if err := env.GetWorkflowError(); err != nil {
@@ -725,7 +724,7 @@ func TestSessionWorkflow_cancelStopsAsyncChild(t *testing.T) {
 			}},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	var childStarted atomic.Bool
@@ -740,7 +739,7 @@ func TestSessionWorkflow_cancelStopsAsyncChild(t *testing.T) {
 	id := durable.SessionID("sess-cancel-child")
 	childID := durable.ChildSessionID(id, "researcher", "sp1")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -813,15 +812,15 @@ func TestSessionWorkflow_steerDuringYieldKeepsPark(t *testing.T) {
 	cat.Register("default", durable.AgentSpec{
 		Options: tacklr.AgentOptions{Model: model, Config: tacklr.Config{MaxWindowSize: 8192}},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	id := durable.SessionID("sess-steer-yield")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "ask"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "ask"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "steer"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "steer"})
 		st := querySession(t, env)
 		if !st.Waiting {
 			t.Error("steer must keep the park")
@@ -833,7 +832,7 @@ func TestSessionWorkflow_steerDuringYieldKeepsPark(t *testing.T) {
 	env.RegisterDelayedCallback(func() {
 		resumed.Store(true)
 		payload, _ := json.Marshal(map[string]any{"selectionIdx": 0})
-		env.SignalWorkflow(signalResume, resumeSignal{Responses: map[string][]byte{"ask1": payload}})
+		env.SignalWorkflow(signalResume, durable.ResumeIn{Responses: map[string][]byte{"ask1": payload}})
 	}, 40*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -913,11 +912,11 @@ func TestSessionWorkflow_failedAsyncChildJobAbsorbed(t *testing.T) {
 			}},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -1007,12 +1006,12 @@ func TestSessionWorkflow_queuedAgentIDAppliesOnIdleConstruct(t *testing.T) {
 	cat.Register("other", durable.AgentSpec{
 		Options: tacklr.AgentOptions{Model: otherModel, Config: tacklr.Config{MaxWindowSize: 8192}, Tools: []*tacklr.Tool{otherTool}},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(cat, fallback, true))
 	id := durable.SessionID("sess-queued-agent")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		select {
@@ -1021,7 +1020,7 @@ func TestSessionWorkflow_queuedAgentIDAppliesOnIdleConstruct(t *testing.T) {
 			t.Error("inference did not start")
 			return
 		}
-		env.SignalWorkflow(signalPrompt, promptSignal{
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{
 			AgentID:    "other",
 			MCPServers: []mcp.MCPConfig{},
 			Text:       "steer",
@@ -1029,7 +1028,7 @@ func TestSessionWorkflow_queuedAgentIDAppliesOnIdleConstruct(t *testing.T) {
 		close(release)
 	}, 5*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "next"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "next"})
 	}, 40*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -1109,7 +1108,7 @@ func TestSessionWorkflow_workerChildCompletesParent(t *testing.T) {
 			Tools:  []*tacklr.Tool{watch},
 		},
 	})
-	fallback := inprocess.NewMemoryEventLog()
+	fallback := durable.NewMemoryEventLog()
 	acts := newActs(cat, fallback, true)
 	acts.Jobs = map[string]durable.JobHandler{
 		"ci": func(ctx context.Context, task string) (string, error) { return "green", nil },
@@ -1121,7 +1120,7 @@ func TestSessionWorkflow_workerChildCompletesParent(t *testing.T) {
 		childStarted.Store(true)
 	})
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, promptSignal{Text: "go"})
+		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)

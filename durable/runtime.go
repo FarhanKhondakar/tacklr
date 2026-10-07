@@ -7,7 +7,7 @@ import (
 )
 
 // Runtime is the only session kernel API. Protocol handlers and hosts call it.
-// Backends: in-process (goroutine wait loop) or Temporal (one workflow per session).
+// The backend is Temporal: one workflow per session.
 //
 // Each backend supplies:
 //   - start a session process (workflow / durable handler)

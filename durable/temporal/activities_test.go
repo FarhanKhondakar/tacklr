@@ -12,8 +12,6 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
-	adapter "github.com/ryanaldo34/tacklr/durable/internal"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -27,18 +25,18 @@ func TestActivities_unknownAgentAndDirectCall(t *testing.T) {
 			},
 		}, Config: tacklr.Config{MaxWindowSize: 8192}},
 	})
-	snaps := inprocess.NewMemorySnapshot()
-	log := inprocess.NewMemoryEventLog()
+	snaps := durable.NewMemorySnapshot()
+	log := durable.NewMemoryEventLog()
 	acts := &activities{Catalog: cat, Snapshots: snaps, Fallback: log, DisableStreams: true, Secrets: durable.NewMemorySecretStorage()}
-	_, err := acts.Inference(t.Context(), inferenceInput{SessionID: "s", Rec: durable.Snapshot{AgentID: "nope"}})
+	_, err := acts.Inference(t.Context(), durable.InferenceInput{SessionID: "s", Rec: durable.Snapshot{AgentID: "nope"}})
 	if !errors.Is(err, durable.ErrAgentNotFound) {
 		t.Fatalf("missing agent: %v", err)
 	}
-	_, err = acts.Tool(t.Context(), toolInput{SessionID: "s", Rec: durable.Snapshot{AgentID: "nope"}, Call: tacklr.ToolCall{ID: "c", Name: "x"}})
+	_, err = acts.Tool(t.Context(), durable.ToolInput{SessionID: "s", Rec: durable.Snapshot{AgentID: "nope"}, Call: tacklr.ToolCall{ID: "c", Name: "x"}})
 	if !errors.Is(err, durable.ErrAgentNotFound) {
 		t.Fatalf("tool missing agent: %v", err)
 	}
-	out, err := acts.Inference(t.Context(), inferenceInput{
+	out, err := acts.Inference(t.Context(), durable.InferenceInput{
 		SessionID: "s", Rec: durable.Snapshot{AgentID: "default"},
 		User:  &tacklr.Message{Role: tacklr.RoleUser, Content: "hi"},
 		State: map[string]any{"user": "Ryan"},
@@ -88,14 +86,14 @@ func TestActivities_childTurnUsesParentSecrets(t *testing.T) {
 	if err := store.Put(t.Context(), "parent", durable.Secrets{Auth: parentAuth}); err != nil {
 		t.Fatal(err)
 	}
-	acts := newActs(cat, inprocess.NewMemoryEventLog(), true)
+	acts := newActs(cat, durable.NewMemoryEventLog(), true)
 	acts.Secrets = store
-	if _, err := acts.Inference(t.Context(), inferenceInput{
+	if _, err := acts.Inference(t.Context(), durable.InferenceInput{
 		SessionID: "child",
 		Rec: durable.Snapshot{
 			Parent:  "parent",
 			AgentID: "default",
-			Mounts:  adapter.ApplyAuth(nil, parentAuth),
+			Mounts:  durable.ApplyAuth(nil, parentAuth),
 		},
 		User: &tacklr.Message{Role: tacklr.RoleUser, Content: "hi"},
 	}); err != nil {
@@ -182,13 +180,13 @@ func TestTool_saveErrorKeepsRetrySplit(t *testing.T) {
 			},
 		},
 	})
-	snaps := inprocess.NewMemorySnapshot()
+	snaps := durable.NewMemorySnapshot()
 	acts := &activities{
 		Catalog: cat, Snapshots: saveErrStore{SnapshotStore: snaps, err: tacklr.Network(errors.New("db down"))},
-		Fallback: inprocess.NewMemoryEventLog(), DisableStreams: true,
+		Fallback: durable.NewMemoryEventLog(), DisableStreams: true,
 		Secrets: durable.NewMemorySecretStorage(),
 	}
-	_, err := acts.Tool(t.Context(), toolInput{
+	_, err := acts.Tool(t.Context(), durable.ToolInput{
 		SessionID: "s",
 		Rec:       durable.Snapshot{AgentID: "default"},
 		Call:      tacklr.ToolCall{ID: "c", Name: "boom", Arguments: "{}"},
@@ -199,7 +197,7 @@ func TestTool_saveErrorKeepsRetrySplit(t *testing.T) {
 	}
 
 	acts.Snapshots = saveErrStore{SnapshotStore: snaps, err: tacklr.ErrNotFound}
-	_, err = acts.Tool(t.Context(), toolInput{
+	_, err = acts.Tool(t.Context(), durable.ToolInput{
 		SessionID: "s",
 		Rec:       durable.Snapshot{AgentID: "default"},
 		Call:      tacklr.ToolCall{ID: "c2", Name: "boom", Arguments: "{}"},

@@ -31,7 +31,7 @@ type AgentSpec struct {
 }
 
 // Catalog is the agent lookup table. Hosts construct it and pass it to
-// inprocess.New or temporal.New. There is no backend plugin registry.
+// temporal.New. There is no backend plugin registry.
 type Catalog interface {
 	Lookup(agentID string) (AgentSpec, bool)
 	DefaultID() string

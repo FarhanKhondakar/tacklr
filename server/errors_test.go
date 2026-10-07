@@ -13,10 +13,8 @@ import (
 	"github.com/ryanaldo34/tacklr/server/acp"
 
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
-	"github.com/ryanaldo34/tacklr/vfs"
 )
 
 // TestHandleInbound_errorContract is the host/client recovery contract:
@@ -45,28 +43,28 @@ func TestHandleInbound_errorContract(t *testing.T) {
 	}
 
 	t.Run("methodNotFound", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		err := inboundWrittenError(t, acp.New(nil), server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog},
 			`{"jsonrpc":"2.0","id":1,"method":"session/foo","params":{}}`)
 		assert(t, err, server.ErrMethodNotFound, acp.CodeMethodNotFound, server.ErrMethodNotFound)
 	})
 
 	t.Run("invalidRequest", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		err := inboundWrittenError(t, acp.New(nil), server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog},
 			`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{}}`)
 		assert(t, err, server.ErrInvalidRequest, acp.CodeInvalidRequest, server.ErrInvalidRequest)
 	})
 
 	t.Run("sessionNotFound", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		err := inboundWrittenError(t, acp.New(nil), server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog},
 			`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"missing"}}`)
 		assert(t, err, server.ErrSessionNotFound, acp.CodeApplication, server.ErrSessionNotFound)
 	})
 
 	t.Run("agentNotFound", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		proto := acp.New(nil)
 		env := server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog}
 		sid := acpSessionID(t, serveACPInbound(t, k, proto, `{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp"}}`))
@@ -76,7 +74,7 @@ func TestHandleInbound_errorContract(t *testing.T) {
 	})
 
 	t.Run("authenticationRequired", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		proto := acp.NewWithAuth(nil, []acp.ACPAuthMethod{{ID: "login", Name: "Login", Scheme: "host"}}, false)
 		err := inboundWrittenError(t, proto, server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog},
 			`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp"}}`)
@@ -84,7 +82,7 @@ func TestHandleInbound_errorContract(t *testing.T) {
 	})
 
 	t.Run("authenticationFailed", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		service := &tacklrsecurity.Service{
 			Authenticator: testAuthenticator(func(context.Context, tacklrsecurity.Attempt) (tacklrsecurity.Principal, error) {
 				return tacklrsecurity.Principal{}, tacklrsecurity.ErrAuthenticationFailed
@@ -114,7 +112,7 @@ func TestHandleInbound_errorContract(t *testing.T) {
 				return nil
 			}),
 		}
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		proto := acp.NewWithAuth(nil, []acp.ACPAuthMethod{{ID: "login", Name: "Login", Scheme: "host"}}, false)
 		aliceCtx := tacklrsecurity.Context{Principal: alice}
 		env := server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Security: service, Conn: &server.Conn{Security: &aliceCtx}}
@@ -125,7 +123,7 @@ func TestHandleInbound_errorContract(t *testing.T) {
 	})
 
 	t.Run("cancelledContext", func(t *testing.T) {
-		k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
+		k := fakeHost()
 		w := &recordingMessageWriter{}
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -362,7 +360,9 @@ func TestHandleInbound_sessionWireOutcomes(t *testing.T) {
 	}
 
 	ghostCat := durable.NewCatalog("ghost")
-	ghostRT := inprocess.New(inprocess.Config{Catalog: ghostCat, Snapshots: inprocess.NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
+	ghostRT := fakeRuntime{create: func(context.Context, durable.CreateSession) (durable.SessionID, error) {
+		return "", durable.ErrAgentNotFound
+	}}
 	if err := inboundWrittenError(t, acp.New(nil), server.ProtocolEnv{Runtime: ghostRT, Catalog: ghostCat},
 		`{"jsonrpc":"2.0","id":32,"method":"session/new","params":{"cwd":"/tmp"}}`); err == nil {
 		t.Fatal("want CreateSession agent missing")

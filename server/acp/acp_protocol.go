@@ -338,7 +338,7 @@ func (p *acpProtocol) OnStreamEvent(ctx context.Context, env server.ProtocolEnv,
 		}
 	}
 
-	if ev.Type == tacklr.StreamEventError && errors.Is(ev.Error, context.Canceled) {
+	if ev.Type == tacklr.StreamEventError && (errors.Is(ev.Error, context.Canceled) || ev.Fail == context.Canceled.Error()) {
 		if env.Conn != nil && env.Conn.Writer != nil && len(reqID) > 0 {
 			_ = env.Conn.Writer.WriteResult(reqID, acpPromptResult(stopReasonCancelled))
 		}

@@ -21,7 +21,6 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	adapter "github.com/ryanaldo34/tacklr/durable/internal"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -32,7 +31,7 @@ type Runtime struct {
 	client              client.Client
 	taskQueue           string
 	catalog             durable.Catalog
-	fallback            *inprocess.MemoryEventLog
+	fallback            durable.EventLog
 	snapshots           durable.SnapshotStore
 	disableStreams      bool
 	turnLocalityTimeout time.Duration
@@ -121,11 +120,11 @@ func requireCfg(cfg Config) {
 	}
 }
 
-func (c Config) memoryLog() *inprocess.MemoryEventLog {
-	if m, ok := c.Fallback.(*inprocess.MemoryEventLog); ok && m != nil {
-		return m
+func (c Config) eventLog() durable.EventLog {
+	if c.Fallback != nil {
+		return c.Fallback
 	}
-	return inprocess.NewMemoryEventLog()
+	return durable.NewMemoryEventLog()
 }
 
 // New constructs a Temporal Runtime. The host must also run NewWorker on the
@@ -139,7 +138,7 @@ func New(c client.Client, cfg Config) *Runtime {
 		client:              c,
 		taskQueue:           cfg.queue(),
 		catalog:             cfg.Catalog,
-		fallback:            cfg.memoryLog(),
+		fallback:            cfg.eventLog(),
 		snapshots:           cfg.Snapshots,
 		disableStreams:      cfg.DisableStreams,
 		turnLocalityTimeout: cfg.TurnLocality,
@@ -158,8 +157,10 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 	if agentID == "" {
 		agentID = r.catalog.DefaultID()
 	}
-	if _, ok := r.catalog.Lookup(agentID); !ok {
-		return "", durable.ErrAgentNotFound
+	if agentID != "" {
+		if _, ok := r.catalog.Lookup(agentID); !ok {
+			return "", fmt.Errorf("%w: %s", durable.ErrAgentNotFound, agentID)
+		}
 	}
 	if req.Worker != "" && req.Specialist != "" {
 		return "", fmt.Errorf("specialist and worker are exclusive: %w", tacklr.ErrInvalid)
@@ -231,7 +232,7 @@ func (r *Runtime) Prompt(ctx context.Context, sessionID durable.SessionID, msg d
 	if err := r.secrets.Put(ctx, sessionID, durable.Secrets{Auth: msg.Auth}); err != nil {
 		return err
 	}
-	return r.signal(ctx, sessionID, signalPrompt, promptSignal{
+	return r.signal(ctx, sessionID, signalPrompt, durable.PromptIn{
 		Text:        msg.Text,
 		UserMessage: msg.UserMessage,
 		AgentID:     msg.AgentID,
@@ -249,7 +250,7 @@ func (r *Runtime) Resume(ctx context.Context, sessionID durable.SessionID, resum
 	if err := r.secrets.Put(ctx, sessionID, durable.Secrets{Auth: resume.Auth}); err != nil {
 		return err
 	}
-	return r.signal(ctx, sessionID, signalResume, resumeSignal{
+	return r.signal(ctx, sessionID, signalResume, durable.ResumeIn{
 		Responses: resume.Responses,
 		Auth:      resume.Auth.WithoutSecrets(),
 		State:     encoded,
@@ -259,12 +260,6 @@ func (r *Runtime) Resume(ctx context.Context, sessionID durable.SessionID, resum
 // Cancel implements durable.Runtime.
 func (r *Runtime) Cancel(ctx context.Context, sessionID durable.SessionID) error {
 	cancelLiveTurn(sessionID)
-	_ = r.fallback.Append(context.WithoutCancel(ctx), sessionID, durable.TopicEvents, tacklr.StreamEvent{
-		Type:    tacklr.StreamEventError,
-		Error:   context.Canceled,
-		Fail:    context.Canceled.Error(),
-		Content: context.Canceled.Error(),
-	})
 	return r.signal(ctx, sessionID, signalCancel, nil)
 }
 
@@ -445,10 +440,7 @@ func NewWorker(c client.Client, cfg Config) worker.Worker {
 	if proj == nil {
 		proj = vfs.FuseProjection{}
 	}
-	fallback := cfg.Fallback
-	if fallback == nil {
-		fallback = cfg.memoryLog()
-	}
+	fallback := cfg.eventLog()
 	acts := &activities{
 		Catalog:        cfg.Catalog,
 		Snapshots:      cfg.Snapshots,

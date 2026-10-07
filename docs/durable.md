@@ -18,21 +18,21 @@ Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frame
 | **Close** | Destroy the session, stop children, and delete its session messages |
 | **Turn locality** | Optional: keep a turn’s Temporal activities on one process (`Config.TurnLocality`) so VFS stays put |
 
-The host API is `durable.Runtime` (`inprocess.New` or `temporal.New`). Tests use the same API. `TurnManager` is not a host type.
+The host API is `durable.Runtime`, implemented by `temporal.New`. `TurnManager` is not a host type.
 
 Host tools on `AgentSpec.Options.Tools` close over their clients at catalog register. That closure is the client for every later turn. Rebuild the tool if the client must change. See [tools.md](tools.md).
 
-## In-process Runtime
+## Session
 
 ```go
 cat := durable.NewCatalog("agent")
 cat.Register("agent", durable.AgentSpec{Options: opts})
-snaps := inprocess.NewMemorySnapshot()
-rt := inprocess.New(inprocess.Config{
-	Catalog:    cat,
-	Snapshots:  snaps,
-	Projection: vfs.DirectProjection{},
-})
+cfg := tacklrtemporal.Config{
+	Catalog:   cat,
+	Snapshots: snaps,
+	Secrets:   secrets,
+}
+rt := tacklrtemporal.New(c, cfg)
 id, _ := rt.CreateSession(ctx, durable.CreateSession{
 	AgentID: "agent",
 	State:   map[string]any{"user": "Ada", "company": "Acme"},
@@ -41,9 +41,9 @@ _ = rt.Prompt(ctx, id, durable.Prompt{Text: prompt, Auth: auth})
 sub, _ := rt.Subscribe(ctx, id, 0)
 ```
 
-`State` merges into checkpoint `userState` (tools read it with `StateGet`). Update it on a later `Prompt` or `Resume`. Tokens on `Auth` stay in process RAM for the turn; recipes land on `Snapshot.Mounts`.
+`State` merges into checkpoint `userState` (tools read it with `StateGet`). Update it on a later `Prompt` or `Resume`. Tokens on `Auth` go to `SecretStorage`. Recipes land on `Snapshot.Mounts`.
 
-One goroutine per session runs the harness wait loop. HITL parks that goroutine and waits for `Runtime.Resume`. The session record lives in `SnapshotStore`.
+One Temporal workflow per session runs the turn. HITL parks that workflow until `Runtime.Resume`. The session record lives in `SnapshotStore`.
 
 `Status` and the stream agree on when a turn finished. `StreamEventComplete` is published only after the checkpoint is saved and `Status` is already `complete`. `StreamEventError` that ends the turn is the same for `failed`. Park publishes `yield`; `Status` stays `running` with `Waiting` true. A later `Prompt` on a completed session starts a new turn: when `Prompt` returns, `Status` is `running` again.
 
@@ -57,7 +57,7 @@ Queued messages are appended only when the window is safe: no unpaired (includin
 
 `session/cancel` (`Runtime.Cancel`) remains the abort path: it cancels the turn, stops children, and **drops unread inbox items**. Close drops the inbox. Resume does not start from a queued Prompt; HITL stays parked until Resume leftover tools finish, then the inbox drains.
 
-Residual: an in-process process crash loses inbox items not yet absorbed. Temporal keeps them in workflow history (same class as leftover Temporal tool calls).
+A worker crash replays the workflow. Prompts that the turn has not absorbed yet stay in workflow history, with the leftover tool calls.
 
 ## Temporal
 

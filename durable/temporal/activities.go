@@ -69,68 +69,12 @@ type activities struct {
 	Jobs           map[string]durable.JobHandler
 }
 
-// inferenceInput is one Inference step. Rec is the Snapshot row to persist
-// (checkpoint filled at save). State is the Prompt/Resume overlay. Tokens
-// come from SecretStorage.
-type inferenceInput struct {
-	SessionID     durable.SessionID
-	Rec           durable.Snapshot
-	MCPServers    []mcp.MCPConfig
-	State         map[string]any
-	User          *tacklr.Message
-	Extra         []*tacklr.Message
-	HadToolRound  bool
-	ModelRequests int
-	Resume        map[string][]byte
-}
-
-// inferenceOutput is the typed Inference activity result.
-type inferenceOutput struct {
-	Complete  bool
-	ToolCalls []tacklr.ToolCall
-	Result    string
-}
-
-// toolInput is the typed Tool activity argument.
-type toolInput struct {
-	SessionID  durable.SessionID
-	Rec        durable.Snapshot
-	MCPServers []mcp.MCPConfig
-	State      map[string]any
-	Call       tacklr.ToolCall
-}
-
-// toolOutput is the typed Tool activity result. Spawn/cancel/await are this
-// call's Runtime intent; the workflow starts, cancels, or waits via ExecuteChildWorkflow.
-type toolOutput struct {
-	Interrupted   bool
-	InterruptID   string
-	InterruptData []byte
-	CancelID      durable.SessionID
-	AwaitID       durable.SessionID
-	JobID         durable.SessionID
-	JobName       string
-	JobTask       string
-	Child         bool
-}
-
 type runJobInput struct {
 	Name string
 	Task string
 }
 
-// commitToolInput records a tool output on the staged batch without executing
-// the tool. SessionWorkflow uses this after spawn_specialist child completion.
-type commitToolInput struct {
-	SessionID  durable.SessionID
-	Rec        durable.Snapshot
-	MCPServers []mcp.MCPConfig
-	State      map[string]any
-	Call       tacklr.ToolCall
-	Output     string
-}
-
-func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenceOutput, error) {
+func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (durable.InferenceOutput, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer bindLiveTurn(in.SessionID, cancel)()
@@ -161,7 +105,7 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 			pub = err
 		}
 		slog.ErrorContext(ctx, "inference harness", "area", telemetry.AreaRuntime, "error", pub)
-		return inferenceOutput{}, activityError(ctx, err)
+		return durable.InferenceOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -172,11 +116,11 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 	defer stop()
 	if len(in.Resume) > 0 {
 		if err := eng.ApplyResume(in.Resume); err != nil {
-			return inferenceOutput{}, activityError(ctx, err)
+			return durable.InferenceOutput{}, activityError(ctx, err)
 		}
 		if pending := eng.PendingToolCalls(); len(pending) > 0 {
 			_, err = a.save(ctx, in.SessionID, h, rev, in.Rec)
-			return inferenceOutput{ToolCalls: pending}, activityError(ctx, err)
+			return durable.InferenceOutput{ToolCalls: pending}, activityError(ctx, err)
 		}
 	}
 	extra := in.Extra
@@ -185,7 +129,7 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 	}
 	if _, err := adapter.AbsorbAll(ctx, eng.AbsorbUser, extra, out); err != nil {
 		slog.ErrorContext(ctx, "inference absorb", "area", telemetry.AreaRuntime, "error", err)
-		return inferenceOutput{}, activityError(ctx, err)
+		return durable.InferenceOutput{}, activityError(ctx, err)
 	}
 	st := &tacklr.TurnState{HadToolRound: in.HadToolRound, ModelRequests: in.ModelRequests}
 	step, err := eng.RunInference(ctx, st, out)
@@ -195,11 +139,11 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 		} else {
 			slog.ErrorContext(ctx, "inference failed", "area", telemetry.AreaRuntime, "error", err)
 		}
-		return inferenceOutput{}, activityError(ctx, err)
+		return durable.InferenceOutput{}, activityError(ctx, err)
 	}
 	if _, err = a.save(ctx, in.SessionID, h, rev, in.Rec); err != nil {
 		slog.ErrorContext(ctx, "inference persist", "area", telemetry.AreaRuntime, "error", err)
-		return inferenceOutput{}, activityError(ctx, err)
+		return durable.InferenceOutput{}, activityError(ctx, err)
 	}
 	result := ""
 	if step.Complete {
@@ -213,10 +157,10 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 	}
 	slog.InfoContext(ctx, "inference completed",
 		"area", telemetry.AreaRuntime, "complete", step.Complete, "tool_calls", len(step.ToolCalls))
-	return inferenceOutput{Complete: step.Complete, ToolCalls: step.ToolCalls, Result: result}, nil
+	return durable.InferenceOutput{Complete: step.Complete, ToolCalls: step.ToolCalls, Result: result}, nil
 }
 
-func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error) {
+func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.ToolOutput, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer bindLiveTurn(in.SessionID, cancel)()
@@ -243,7 +187,7 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
 		slog.ErrorContext(ctx, "tool harness", "area", telemetry.AreaHarness, "error", err)
-		return toolOutput{}, activityError(ctx, err)
+		return durable.ToolOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -264,7 +208,7 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 	if runErr != nil {
 		if err := ctx.Err(); err != nil {
 			slog.WarnContext(ctx, "tool cancelled", "area", telemetry.AreaHarness, "tool", in.Call.Name)
-			return toolOutput{}, activityError(ctx, runErr)
+			return durable.ToolOutput{}, activityError(ctx, runErr)
 		}
 		slog.ErrorContext(ctx, "tool failed", "area", telemetry.AreaHarness, "tool", in.Call.Name, "error", runErr)
 	}
@@ -274,7 +218,7 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 		if runErr != nil {
 			saveErr = fmt.Errorf("tool: %w: persist: %w", runErr, saveErr)
 		}
-		return toolOutput{}, activityError(ctx, saveErr)
+		return durable.ToolOutput{}, activityError(ctx, saveErr)
 	}
 	status := "success"
 	if step.Interrupted {
@@ -286,7 +230,7 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 	if await == "" && step.AwaitJobID != "" {
 		await = durable.SessionID(step.AwaitJobID)
 	}
-	return toolOutput{
+	return durable.ToolOutput{
 		Interrupted:   step.Interrupted,
 		InterruptID:   step.InterruptID,
 		InterruptData: step.InterruptData,
@@ -311,10 +255,10 @@ func (a *activities) RunJob(ctx context.Context, in runJobInput) (string, error)
 	return out, activityError(ctx, err)
 }
 
-func (a *activities) CommitToolOutput(ctx context.Context, in commitToolInput) (toolOutput, error) {
+func (a *activities) CommitToolOutput(ctx context.Context, in durable.CommitInput) (durable.ToolOutput, error) {
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
-		return toolOutput{}, activityError(ctx, err)
+		return durable.ToolOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -322,7 +266,7 @@ func (a *activities) CommitToolOutput(ctx context.Context, in commitToolInput) (
 	}()
 	h.Drive().RecordToolResult(in.Call, in.Output)
 	if _, err = a.save(ctx, in.SessionID, h, rev, in.Rec); err != nil {
-		return toolOutput{}, activityError(ctx, err)
+		return durable.ToolOutput{}, activityError(ctx, err)
 	}
 	presented := in.Call
 	presented.Status = "success"
@@ -334,7 +278,7 @@ func (a *activities) CommitToolOutput(ctx context.Context, in commitToolInput) (
 		Content:   in.Output,
 		ToolCalls: []tacklr.ToolCall{presented},
 	}, true)
-	return toolOutput{}, nil
+	return durable.ToolOutput{}, nil
 }
 
 func (a *activities) harness(ctx context.Context, id durable.SessionID, rec durable.Snapshot, extraMCP []mcp.MCPConfig, state map[string]any) (*tacklr.TurnManager, *vfs.MountSession, *vfs.MountSession, durable.Revision, error) {
@@ -363,7 +307,7 @@ func (a *activities) harness(ctx context.Context, id durable.SessionID, rec dura
 	if proj == nil {
 		proj = vfs.DirectProjection{}
 	}
-	h, ms, skillsMS, err := adapter.ConstructTurn(ctx, spec, string(id), adapter.BindingsForTurn(rec.Mounts, sec.Auth), proj, extraMCP)
+	h, ms, skillsMS, err := adapter.ConstructTurn(ctx, spec, string(id), durable.BindingsForTurn(rec.Mounts, sec.Auth), proj, extraMCP)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}

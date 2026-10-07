@@ -46,17 +46,17 @@ A model round may emit several tool calls. The harness does not infer again unti
 
 ## Get started
 
-This is a host: a model, a brain, a `/workspace` tree, a durable runtime, and ACP on HTTP. The protocol never talks to Temporal (or the in-process loop) in their own dialect — it consumes `tacklr.StreamEvent` from `Runtime`.
+This is a host: a model, a brain, a `/workspace` tree, a Temporal runtime, and ACP on HTTP. The protocol consumes `tacklr.StreamEvent` from `Runtime`.
 
 Session data is three frozen planes. Do not mix them:
 
 | Plane | You pass | Holds |
 |-------|----------|--------|
 | **SnapshotStore** | `Config.Snapshots` (required; Temporal: same instance on New and NewWorker) | Window, plan, parked interrupt, `userState`, VFS recipes, session identity |
-| **Wait loop** | `inprocess.New` or `temporal.New` + `NewWorker` | Scheduler: leftover Temporal tool calls, MCP Durable topology, child futures, Status |
+| **Wait loop** | `temporal.New` + `NewWorker` | Scheduler: leftover tool calls, child workflows, Status |
 | **SecretStorage** | `temporal.Config.Secrets` (required; same instance on New and NewWorker) | VFS tokens. Not in snapshots. Not in Temporal history |
 
-In-process keeps work-item tokens in RAM for the turn. Temporal puts them in `Secrets` before signaling. `Prompt.Auth` / `Resume.Auth` is still how the host hands tokens in.
+Temporal puts work-item tokens in `Secrets` before signaling. `Prompt.Auth` / `Resume.Auth` is how the host hands tokens in.
 
 ```go
 package main
@@ -74,6 +74,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/sdk/client"
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/brain"
@@ -81,9 +82,9 @@ import (
 	"github.com/ryanaldo34/tacklr/brain/helixgraph"
 	"github.com/ryanaldo34/tacklr/brain/postgres"
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/durable/temporal"
 	"github.com/ryanaldo34/tacklr/web"
 	"github.com/ryanaldo34/tacklr/openai"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	"github.com/ryanaldo34/tacklr/server"
 	"github.com/ryanaldo34/tacklr/server/acp"
 	"github.com/ryanaldo34/tacklr/telemetry"
@@ -176,12 +177,23 @@ func main() {
 		OpenSkills: vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(filepath.Join(jail, "skills"))))),
 	})
 
-	snaps := inprocess.NewMemorySnapshot()
-	rt := inprocess.New(inprocess.Config{
+	c, err := temporal.Dial(client.Options{HostPort: os.Getenv("TEMPORAL_ADDRESS")})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
+	cfg := temporal.Config{
 		Catalog:    cat,
-		Snapshots:  snaps,
+		Snapshots:  durable.NewMemorySnapshot(),
+		Secrets:    durable.NewMemorySecretStorage(),
 		Projection: vfs.DirectProjection{},
-	})
+	}
+	rt := temporal.New(c, cfg)
+	w := temporal.NewWorker(c, cfg)
+	if err := w.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer w.Stop()
 	srv := server.NewServer(rt, cat, acp.New(nil)).AllowAnonymousNetwork()
 	log.Printf("ACP on http://127.0.0.1:8080/acp")
 	if err := srv.ServeHTTP(ctx, "127.0.0.1:8080"); err != nil && !errors.Is(err, context.Canceled) {
@@ -367,7 +379,7 @@ Where to look:
 |------|------------|
 | Turn loop, tools, plan | `agent.go`, `agent_run.go`, `tools.go` |
 | Messages / checkpoints | `message.go`, `checkpoint.go` |
-| Specialists / children | `subagents.go`, `durable/child.go`, `durable/inprocess/` |
+| Specialists / children | `subagents.go`, `durable/temporal/child.go` |
 | Runtime | `durable/runtime.go`, `docs/durable.md` |
 | VFS | `vfs/`, `docs/vfs.md` |
 | Model client | `openai/` (`tacklr.InferenceStrategy`) |

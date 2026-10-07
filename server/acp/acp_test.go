@@ -17,10 +17,10 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
+	"github.com/ryanaldo34/tacklr/internal/livesess"
+	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/telemetry"
-	"github.com/ryanaldo34/tacklr/vfs"
 )
 
 func TestMain(m *testing.M) {
@@ -30,6 +30,7 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	_ = shutdown(context.Background())
+	temporaldocker.Stop()
 	os.Exit(code)
 }
 
@@ -55,15 +56,16 @@ func newTestRuntime(t *testing.T, model tacklr.InferenceStrategy, spec durable.A
 	cat := durable.NewCatalog("default")
 	cat.Register("default", spec)
 	return &testRuntime{
-		Runtime: inprocess.New(inprocess.Config{Catalog: cat, Snapshots: inprocess.NewMemorySnapshot(), Projection: vfs.DirectProjection{}}),
+		Runtime: livesess.Runtime(t, cat),
 		Catalog: cat,
 	}
 }
 
-func newEmptyRuntime() *testRuntime {
+func newEmptyRuntime(t *testing.T) *testRuntime {
+	t.Helper()
 	cat := durable.NewCatalog("")
 	return &testRuntime{
-		Runtime: inprocess.New(inprocess.Config{Catalog: cat, Snapshots: inprocess.NewMemorySnapshot(), Projection: vfs.DirectProjection{}}),
+		Runtime: livesess.Runtime(t, cat),
 		Catalog: cat,
 	}
 }
@@ -280,9 +282,8 @@ func TestHandleRPC_sessionLoad_fromStoreAfterRestart(t *testing.T) {
 	rec1 := s1.rpc(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/proj","mcpServers":[{"type":"http","name":"api","url":"https://api.example.com/mcp","headers":[]}]}}`)
 	sessionID, _ := acpRPCResult(t, rec1)["sessionId"].(string)
 
-	// Process 2: load + prompt
-	r2 := newTestRuntime(t, strategy, durable.AgentSpec{})
-	s2 := newACPTestServerWithWire(t, r2, wire)
+	// New protocol process, same Temporal worker and wire store.
+	s2 := newACPTestServerWithWire(t, r1, wire)
 	rec2 := s2.rpc(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"` + sessionID + `","cwd":"/proj"}}`)
 	if acpRPCResult(t, rec2)["sessionId"] != sessionID {
 		t.Fatalf("load result: %v", rec2.Body.String())
@@ -319,7 +320,7 @@ func TestHandleRPC_sessionLoad_fromStoreAfterRestart(t *testing.T) {
 }
 
 func TestHandleRPC_noAgentConfigured_onPrompt(t *testing.T) {
-	r := newEmptyRuntime() // no default agent
+	r := newEmptyRuntime(t)
 
 	rec1 := serveACPRaw(t, r, `{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp"}}`)
 	var resp1 map[string]any

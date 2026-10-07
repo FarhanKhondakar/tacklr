@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ryanaldo34/tacklr/durable/inprocess"
+	"github.com/ryanaldo34/tacklr/internal/livesess"
+	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/server"
 	"github.com/ryanaldo34/tacklr/server/acp"
 	"github.com/ryanaldo34/tacklr/telemetry"
-	"github.com/ryanaldo34/tacklr/vfs"
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
@@ -52,8 +52,8 @@ func (healthProtocol) OnStreamClosed(ctx context.Context, env server.ProtocolEnv
 }
 
 func TestServer_mountsHostProtocolBesideACP(t *testing.T) {
-	k := newTestRuntime(t, nil, durable.AgentSpec{})
-	srv := server.NewServer(k.Runtime, k.Catalog, acp.New(nil), healthProtocol{}).AllowAnonymousNetwork()
+	cat := durable.NewCatalog("default")
+	srv := server.NewServer(fakeRuntime{}, cat, acp.New(nil), healthProtocol{}).AllowAnonymousNetwork()
 	mux := srv.HTTPMux()
 
 	rec := httptest.NewRecorder()
@@ -305,12 +305,59 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	_ = shutdown(context.Background())
+	temporaldocker.Stop()
 	os.Exit(code)
 }
+
+// fakeRuntime is a test fixture. It does not run a turn.
+type fakeRuntime struct {
+	create func(context.Context, durable.CreateSession) (durable.SessionID, error)
+}
+
+func (f fakeRuntime) CreateSession(ctx context.Context, req durable.CreateSession) (durable.SessionID, error) {
+	if f.create != nil {
+		return f.create(ctx, req)
+	}
+	return "sess", nil
+}
+
+func (fakeRuntime) Prompt(context.Context, durable.SessionID, durable.Prompt) error { return nil }
+func (fakeRuntime) Resume(context.Context, durable.SessionID, durable.Resume) error { return nil }
+func (fakeRuntime) Cancel(context.Context, durable.SessionID) error                 { return nil }
+func (fakeRuntime) Close(context.Context, durable.SessionID) error                  { return nil }
+func (fakeRuntime) Head(context.Context, durable.SessionID) (durable.Seq, error)    { return 0, nil }
+func (fakeRuntime) Subscribe(context.Context, durable.SessionID, durable.Seq) (durable.Subscription, error) {
+	ch := make(chan tacklr.StreamEvent)
+	close(ch)
+	return closedSub{ch}, nil
+}
+func (fakeRuntime) Children(context.Context, durable.SessionID) ([]durable.SessionID, error) {
+	return nil, nil
+}
+func (fakeRuntime) Jobs(context.Context, durable.SessionID) ([]durable.SessionStatus, error) {
+	return nil, nil
+}
+func (fakeRuntime) Status(context.Context, durable.SessionID) (durable.SessionStatus, error) {
+	return durable.SessionStatus{}, durable.ErrSessionNotFound
+}
+
+type closedSub struct{ ch chan tacklr.StreamEvent }
+
+func (s closedSub) Events() <-chan tacklr.StreamEvent { return s.ch }
+func (closedSub) Close() error                        { return nil }
 
 type testRuntime struct {
 	Runtime durable.Runtime
 	Catalog *durable.MemoryCatalog
+}
+
+func fakeHost() *testRuntime {
+	cat := durable.NewCatalog("default")
+	cat.Register("default", durable.AgentSpec{Options: tacklr.AgentOptions{
+		Model:  &testkit.ScriptedModel{},
+		Config: tacklr.Config{MaxWindowSize: 8192, SystemPrompt: "test prompt"},
+	}})
+	return &testRuntime{Runtime: fakeRuntime{}, Catalog: cat}
 }
 
 func newTestRuntime(t *testing.T, model tacklr.InferenceStrategy, spec durable.AgentSpec) *testRuntime {
@@ -330,7 +377,7 @@ func newTestRuntime(t *testing.T, model tacklr.InferenceStrategy, spec durable.A
 	cat := durable.NewCatalog("default")
 	cat.Register("default", spec)
 	return &testRuntime{
-		Runtime: inprocess.New(inprocess.Config{Catalog: cat, Snapshots: inprocess.NewMemorySnapshot(), Projection: vfs.DirectProjection{}}),
+		Runtime: livesess.Runtime(t, cat),
 		Catalog: cat,
 	}
 }

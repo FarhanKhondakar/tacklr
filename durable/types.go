@@ -157,7 +157,7 @@ var (
 	ErrStaleCheckpoint = errors.New("stale checkpoint")
 )
 
-// JobHandler runs a named background job. Register on inprocess/temporal Config.Jobs.
+// JobHandler runs a named background job. Register on temporal.Config.Jobs.
 type JobHandler func(ctx context.Context, task string) (string, error)
 
 // ChildSessionID is the stable id for a spawn_specialist child session.

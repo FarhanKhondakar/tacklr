@@ -26,7 +26,7 @@ type TurnAttrs struct {
 	SessionID   string
 	Kind        string // prompt | resume
 	LoadSession bool
-	// Runtime is a closed enum (RuntimeEmbed | RuntimeInProcess | RuntimeTemporal)
+	// Runtime is a closed enum (RuntimeEmbed | RuntimeTemporal)
 	// or a host-defined durable-backend id. Empty omits the attribute.
 	Runtime string
 }
