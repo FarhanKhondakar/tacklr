@@ -17,7 +17,6 @@ import (
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
 	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/telemetry"
-	"github.com/ryanaldo34/tacklr/vfs"
 )
 
 // acpWireSession is live ACP wire state for one session id (not harness state).
@@ -27,8 +26,7 @@ type acpWireSession struct {
 	mcpServers   []mcp.MCPConfig
 	configValues map[string]string
 	owner        string
-	vfs          []vfs.Binding
-	vfsDrop      []string
+	creds        session.CredentialBag
 }
 
 // acpWireEnvelope is the durable JSON blob in server.ProtocolWireStore.
@@ -61,76 +59,6 @@ func (s *acpWireSession) cwdMismatch(cwd string) error {
 		return server.Errorf(server.ErrInvalidRequest, "cwd does not match session cwd")
 	}
 	return nil
-}
-
-func (s *acpWireSession) takeAuth() session.AuthContext {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := session.AuthContext{
-		Bindings: append([]vfs.Binding(nil), s.vfs...),
-		Drop:     append([]string(nil), s.vfsDrop...),
-	}
-	s.vfsDrop = nil
-	return out
-}
-
-func (s *acpWireSession) stashBind(b vfs.Binding) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	alias := strings.TrimSpace(b.Params[vfs.ParamName])
-	if alias == "" {
-		alias = strings.TrimPrefix(strings.TrimSpace(b.Point), "/")
-	}
-	for i, existing := range s.vfs {
-		ex := strings.TrimSpace(existing.Params[vfs.ParamName])
-		if ex == "" {
-			ex = strings.TrimPrefix(strings.TrimSpace(existing.Point), "/")
-		}
-		if ex == alias && existing.Provider == b.Provider {
-			s.vfs[i] = b
-			return
-		}
-	}
-	s.vfs = append(s.vfs, b)
-}
-
-func (s *acpWireSession) stashRefresh(provider string, c vfs.Credential) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	found := false
-	for i, existing := range s.vfs {
-		if existing.Provider != provider {
-			continue
-		}
-		s.vfs[i].Auth = c
-		found = true
-	}
-	return found
-}
-
-func (s *acpWireSession) stashUnbind(point, provider string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	kept := s.vfs[:0]
-	for _, existing := range s.vfs {
-		alias := strings.TrimSpace(existing.Params[vfs.ParamName])
-		if alias == "" {
-			alias = strings.TrimPrefix(strings.TrimSpace(existing.Point), "/")
-		}
-		drop := false
-		if point != "" && (alias == point || existing.Point == point) {
-			drop = true
-		}
-		if provider != "" && existing.Provider == provider {
-			drop = true
-		}
-		if drop {
-			s.vfsDrop = append(s.vfsDrop, alias)
-			continue
-		}
-		kept = append(kept, existing)
-	}
-	s.vfs = kept
 }
 
 func wireSessionFromEnvelope(env acpWireEnvelope) *acpWireSession {
@@ -291,7 +219,7 @@ func (p *acpProtocol) bindTurn(ctx context.Context, env server.ProtocolEnv, pr *
 		UserMessage: pr.UserMessage,
 		Responses:   pr.Responses,
 		MCPServers:  mcpServers,
-		Auth:        sess.takeAuth(),
+		Auth:        sess.creds.Take(),
 	}, nil
 }
 

@@ -73,8 +73,9 @@ type HTTPRoute struct {
 //
 // The ACP built-in is package server/acp. Hosts implement Protocol to
 // define their own wire: HTTP/WebSocket routes, frame encoding, and HITL resume.
-// The kernel does not import protocol types. Map wire auth into session.AuthContext
-// on Prompt/Resume; call RunTurn to pump Runtime.Subscribe through OnStreamEvent.
+// The kernel does not import protocol types. Parse wire credentials into
+// vfs.Binding values and store them on a session.CredentialBag. Put bag.Take()
+// on Prompt or Resume. Call RunTurn to pump Runtime.Subscribe through OnStreamEvent.
 type Protocol interface {
 	// HandleInbound decodes one connection-oriented body (WebSocket).
 	// HTTP-route-only protocols may return nil.

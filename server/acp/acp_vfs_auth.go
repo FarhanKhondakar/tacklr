@@ -72,8 +72,7 @@ func (p *acpProtocol) ownedVFSSession(ctx context.Context, env server.ProtocolEn
 	return p.resolveOwnedWireSession(ctx, env, sessionID, actionVFSCredentials)
 }
 
-// handleVFSBind stashes credentials on the ACP wire session. They are copied
-// onto Prompt/Resume AuthContext in bindTurn. This is protocol state, not kernel.
+// handleVFSBind parses the ACP bind payload. The credential bag is session.CredentialBag.
 func (p *acpProtocol) handleVFSBind(ctx context.Context, env server.ProtocolEnv, pr *parsedRequest) (any, error) {
 	var params vfsBindParams
 	_ = json.Unmarshal(pr.Params, &params)
@@ -106,7 +105,10 @@ func (p *acpProtocol) handleVFSBind(ctx context.Context, env server.ProtocolEnv,
 			errs = append(errs, itemErr{Point: item.Point, Error: "unknown vfs profile " + b.Provider})
 			continue
 		}
-		sess.stashBind(b)
+		if err := sess.creds.Bind(b); err != nil {
+			errs = append(errs, itemErr{Point: item.Point, Error: err.Error()})
+			continue
+		}
 		okItems = append(okItems, mounted{Point: vfs.WorkspacePoint, Provider: b.Provider})
 	}
 	return map[string]any{
@@ -125,7 +127,7 @@ func (p *acpProtocol) handleVFSRefresh(ctx context.Context, env server.ProtocolE
 	if err != nil {
 		return nil, err
 	}
-	if !sess.stashRefresh(params.Provider, params.Auth.credential()) {
+	if !sess.creds.Refresh(params.Provider, params.Auth.credential()) {
 		return nil, server.Errorf(server.ErrInvalidRequest, "no vfs binding for provider")
 	}
 	return map[string]any{}, nil
@@ -142,6 +144,6 @@ func (p *acpProtocol) handleVFSUnbind(ctx context.Context, env server.ProtocolEn
 	if name := strings.TrimSpace(params.Name); name != "" {
 		point = name
 	}
-	sess.stashUnbind(point, params.Provider)
+	sess.creds.Unbind(point, params.Provider)
 	return map[string]any{}, nil
 }

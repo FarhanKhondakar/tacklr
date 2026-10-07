@@ -11,6 +11,7 @@
 // does not ship that program. A protocol asks it through Conn.Ask.
 //
 // RunTurn pumps Runtime.Prompt/Resume/Subscribe through Protocol.OnStreamEvent
-// and OnStreamClosed. Map wire credentials into session.AuthContext on the work
-// item. Runtime, harness, VFS, and Temporal do not import this package.
+// and OnStreamClosed. A protocol parses its own credential payload and stores
+// the bindings on session.CredentialBag. Runtime, harness, VFS, and Temporal
+// do not import this package.
 package server
