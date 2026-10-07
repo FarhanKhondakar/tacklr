@@ -30,8 +30,8 @@ type Server struct {
 	networkPolicyConfigured bool
 }
 
-// NewServer wraps a Runtime and one or more Protocols. ACP is NewACPProtocol;
-// pass additional implementations to mount their HTTPRoutes on the same mux.
+// NewServer wraps a Runtime and one or more Protocols.
+// The ACP built-in is acp.New. Pass more Protocols to mount them on the same mux.
 func NewServer(rt durable.Runtime, cat durable.Catalog, protocols ...Protocol) *Server {
 	if rt == nil || len(protocols) == 0 {
 		panic("server: Runtime and at least one Protocol are required")

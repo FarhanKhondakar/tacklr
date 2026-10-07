@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ryanaldo34/tacklr/brain"
+	"github.com/ryanaldo34/tacklr/brain/engram"
 	"github.com/ryanaldo34/tacklr/vfs"
 	"github.com/ryanaldo34/tacklr/vfsindex"
 )
@@ -275,7 +276,7 @@ func TestKnowledgeSaveSearchRead(t *testing.T) {
 	ns := mustNS(t, "id", uuid.NewString())
 	ms := mustMountTree(t, "save-mem",
 		vfs.At("work", vfs.Local(t.TempDir())),
-		vfs.At("engram", brain.Open(eng, brain.Scope{Namespace: ns})),
+		vfs.At("engram", engram.Open(eng, brain.Scope{Namespace: ns})),
 	)
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:    "save-mem",
@@ -395,12 +396,12 @@ func TestKnowledgeSave_rootsMount(t *testing.T) {
 	ms := mustMountTreeReq(t, "save-roots", vfs.Request{Bindings: []vfs.Binding{{
 		Params: map[string]string{
 			vfs.ParamName: "discovery",
-			"mode":        brain.ModeRoots,
+			"mode":        engram.ModeRoots,
 			"kind":        "Discovery",
 		},
 	}}},
 		vfs.At("work", vfs.Local(t.TempDir())),
-		vfs.At("discovery", brain.Open(eng, brain.Scope{Namespace: ns})).Profile("brain").Indexed(vfsindex.PolicyNone),
+		vfs.At("discovery", engram.Open(eng, brain.Scope{Namespace: ns})).Profile("brain").Indexed(vfsindex.PolicyNone),
 	)
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:    "save-roots",
@@ -462,7 +463,7 @@ func TestRun_workspaceResearchTurn(t *testing.T) {
 	ns := mustNS(t, "id", uuid.NewString())
 	ms := mustMountTree(t, "research-turn",
 		vfs.At("work", vfs.Local(t.TempDir())),
-		vfs.At("engram", brain.Open(eng, brain.Scope{Namespace: ns})),
+		vfs.At("engram", engram.Open(eng, brain.Scope{Namespace: ns})),
 	)
 
 	wd := &recordingWatchdog{}

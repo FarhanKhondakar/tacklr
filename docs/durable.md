@@ -1,6 +1,6 @@
 # Durable runtime
 
-Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frames to Runtime calls. ACP is the native implementation (`NewACPProtocol`); hosts implement `Protocol` for their own streaming and delivery. Runtime does not import protocol types. Autonomous workflows call Runtime directly.
+Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frames to Runtime calls. ACP is the built-in in package `server/acp` (`acp.New`). Hosts implement `Protocol` for their own streaming and delivery. Runtime does not import protocol types. Autonomous workflows call Runtime directly.
 
 ## Vocabulary
 
@@ -174,7 +174,7 @@ Encrypt remaining work-item payloads (prompt text, tool args, HITL bytes) at res
 `server.Protocol` is the host extension point. ACP’s built-in remote transport is WebSocket on `GET /acp` (JSON-RPC both ways). Hosts may add their own HTTP routes. Map each `StreamEvent` to wire frames in `OnStreamEvent`, and call `server.RunTurn` to pump `Runtime.Subscribe`:
 
 ```go
-srv := server.NewServer(rt, cat, server.NewACPProtocol(wire), myProtocol{})
+srv := server.NewServer(rt, cat, acp.New(wire), myProtocol{})
 ```
 
 A protocol is the handshake: create a session, start a turn, stream `StreamEvent`, end a turn, return HITL answers. Map wire auth into `AuthContext`. Hosts that persist ACP wire envelopes in Postgres call `PostgresWireStore.Setup`.

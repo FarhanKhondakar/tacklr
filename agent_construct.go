@@ -48,8 +48,8 @@ type AgentOptions struct {
 	SessionID string
 	Model     InferenceStrategy
 	WatchDog  AgentWatchDog
-	// Tools are host tools, including optional builtins from package
-	// builtins (email, Exa web). Give each tool its clients by closing
+	// Tools are host tools, including optional tools from email and web.
+	// Give each tool its clients by closing
 	// over them in the constructor (see NewTool). Session-world tools
 	// (VFS, brain, index) still inject from the fields below.
 	Tools      []*Tool

@@ -1,4 +1,4 @@
-package server
+package server_test
 
 import (
 	"context"
@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ryanaldo34/tacklr/server"
+	"github.com/ryanaldo34/tacklr/server/acp"
 
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
@@ -35,19 +38,19 @@ func TestACPAuthentication_ownsSessionsByGenericPrincipal(t *testing.T) {
 			return tacklrsecurity.NewPrincipal("alice")
 		}),
 	}
-	protocol := NewACPProtocolWithAuth(nil, []ACPAuthMethod{{
+	protocol := acp.NewWithAuth(nil, []acp.ACPAuthMethod{{
 		ID:          "agent-login",
 		Name:        "Agent login",
 		Description: "Authenticate with the host",
 		Scheme:      "host-login",
 	}}, true)
 	k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
-	connection := &Conn{}
-	env := ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Conn: connection, Security: service}
+	connection := &server.Conn{}
+	env := server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Conn: connection, Security: service}
 	call := func(body string) map[string]any {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		connection.Writer = &jsonRPCMessageWriter{w: recorder}
+		connection.Writer = acp.HTTPWriter(recorder)
 		_ = protocol.HandleInbound(t.Context(), env, []byte(body))
 		var response map[string]any
 		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -79,10 +82,10 @@ func TestACPAuthentication_ownsSessionsByGenericPrincipal(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobContext := tacklrsecurity.Context{Principal: bob}
-	bobConnection := &Conn{Security: &bobContext}
+	bobConnection := &server.Conn{Security: &bobContext}
 	bobRecorder := httptest.NewRecorder()
-	bobConnection.Writer = &jsonRPCMessageWriter{w: bobRecorder}
-	bobEnv := ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Conn: bobConnection, Security: service}
+	bobConnection.Writer = acp.HTTPWriter(bobRecorder)
+	bobEnv := server.ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog, Conn: bobConnection, Security: service}
 	load := `{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"` + sessionID + `"}}`
 	_ = protocol.HandleInbound(t.Context(), bobEnv, []byte(load))
 	var bobResponse map[string]any
@@ -104,10 +107,10 @@ func TestACPAuthentication_ownsSessionsByGenericPrincipal(t *testing.T) {
 }
 
 func TestServer_networkPolicyMustBeExplicit(t *testing.T) {
-	server := newTestServer(t)
-	err := server.ServeHTTP(t.Context(), "127.0.0.1:0")
-	if !errors.Is(err, ErrNetworkSecurityPolicyRequired) {
-		t.Fatalf("ServeHTTP error = %v", err)
+	srv := newTestServer(t)
+	err := srv.ServeHTTP(t.Context(), "127.0.0.1:0")
+	if !errors.Is(err, server.ErrNetworkSecurityPolicyRequired) {
+		t.Fatalf("server.ServeHTTP error = %v", err)
 	}
 }
 
@@ -118,7 +121,7 @@ func TestServer_WithSecurity_authenticatesHTTPRequests(t *testing.T) {
 		}),
 	}
 	k := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
-	srv := NewServer(k.Runtime, k.Catalog, healthProtocol{}).WithSecurity(service, func(r *http.Request) (tacklrsecurity.Attempt, bool) {
+	srv := server.NewServer(k.Runtime, k.Catalog, healthProtocol{}).WithSecurity(service, func(r *http.Request) (tacklrsecurity.Attempt, bool) {
 		if token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); token != r.Header.Get("Authorization") {
 			return tacklrsecurity.Attempt{Scheme: "bearer", Credential: tacklrsecurity.NewSecret([]byte(token))}, true
 		}
@@ -143,7 +146,7 @@ func TestServer_WithSecurity_authenticatesHTTPRequests(t *testing.T) {
 	denied := httptest.NewRecorder()
 	badReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	badReq.Header.Set("Authorization", "Bearer bad")
-	failAuth := NewServer(k.Runtime, k.Catalog, healthProtocol{}).WithSecurity(&tacklrsecurity.Service{
+	failAuth := server.NewServer(k.Runtime, k.Catalog, healthProtocol{}).WithSecurity(&tacklrsecurity.Service{
 		Authenticator: testAuthenticator(func(_ context.Context, attempt tacklrsecurity.Attempt) (tacklrsecurity.Principal, error) {
 			if string(attempt.Credential.Bytes()) == "bad" {
 				return tacklrsecurity.Principal{}, errors.New("nope")
@@ -161,7 +164,7 @@ func TestServer_WithSecurity_authenticatesHTTPRequests(t *testing.T) {
 		t.Fatalf("failed authenticate status = %d", denied.Code)
 	}
 
-	acp := NewServer(k.Runtime, k.Catalog, NewACPProtocol(nil)).WithSecurity(service, func(*http.Request) (tacklrsecurity.Attempt, bool) {
+	acp := server.NewServer(k.Runtime, k.Catalog, acp.New(nil)).WithSecurity(service, func(*http.Request) (tacklrsecurity.Attempt, bool) {
 		return tacklrsecurity.Attempt{}, false
 	})
 	open := httptest.NewRecorder()

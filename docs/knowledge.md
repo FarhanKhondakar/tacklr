@@ -241,8 +241,9 @@ flowchart LR
 | `brain/helixgraph` | Helix client behind graph interfaces | Leak Helix types into tools |
 | `tacklr` (harness) | Factory registration, default `/engram`, tools, skip-index | Own parse/index internals |
 
-`vfs` and `brain` work alone. `vfsindex` is the optional composition layer
-because it is the only package allowed to import both.
+`vfs` and `brain` work alone. `brain/engram` mounts a brain engine as files.
+`vfsindex` indexes files into the brain. Those two packages are the ones that
+import both.
 
 ---
 
@@ -250,7 +251,7 @@ because it is the only package allowed to import both.
 
 ### Engrams — the file *is* the object
 
-`brain.Open` returns a `vfs.OpenFunc`. A write to an Engram path parses
+`engram.Open` returns a `vfs.OpenFunc`. A write to an Engram path parses
 Markdown, validates, and `Put`s the object. A read serializes the object back
 to the same format.
 
@@ -719,7 +720,7 @@ if err := eng.LoadKindsFromStore(ctx); err != nil { /* ... */ }
 //   SearchNamespace: from brain.ParseNamespace("org", orgID) // host ceiling; tools may add workspace=…
 //
 // Harness then:
-//   registers brain.Open (profile "brain")
+//   registers engram.Open (profile "brain")
 //   mounts /engram (prefix, IndexPolicy=none) unless you already mounted one
 //   starts vfsindex.Bridge (skips profile "brain")
 //   injects file tools + knowledge tools
@@ -780,7 +781,7 @@ files.
 | Helix adapter | `brain/helixgraph/` |
 | Artifact indexer | `vfsindex/indexer.go` |
 | Index policy + bridge | `vfsindex/policy.go`, `vfsindex/bridge.go` |
-| Default `/workspace/engram` | `vfs.At("engram", brain.Open(...))` |
+| Default `/workspace/engram` | `vfs.At("engram", engram.Open(...))` |
 | Knowledge tools | `tools_brain.go` |
 | Index tools | `tools_vfsindex.go` |
 

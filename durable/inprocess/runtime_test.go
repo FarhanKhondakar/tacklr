@@ -16,7 +16,6 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/brain"
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/durtest"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
@@ -120,7 +119,7 @@ func TestBindThenPromptReadsWorkspace(t *testing.T) {
 	model := &testkit.ScriptedModel{
 		InvokeFn: workspaceReadModel,
 	}
-	cat := newCatalog(t, model, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", builtins.Local(dir)))})
+	cat := newCatalog(t, model, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(dir)))})
 	rt := New(Config{Catalog: cat, Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
 	id, err := rt.CreateSession(ctx, durable.CreateSession{AgentID: "default"})
 	if err != nil {
@@ -181,8 +180,8 @@ func TestPrompt_readSkillFromOpenSkills(t *testing.T) {
 		},
 	}
 	rt := New(Config{Catalog: newCatalog(t, model, durable.AgentSpec{
-		OpenVFS:    vfs.Tree(vfs.At("work", builtins.Local(t.TempDir()))),
-		OpenSkills: vfs.Tree(vfs.At("skills", builtins.Local(pack))),
+		OpenVFS:    vfs.Tree(vfs.At("work", vfs.Local(t.TempDir()))),
+		OpenSkills: vfs.Tree(vfs.At("skills", vfs.Local(pack))),
 	}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
 	id, err := rt.CreateSession(ctx, durable.CreateSession{AgentID: "default"})
 	if err != nil {
@@ -797,7 +796,7 @@ func TestPrompt_readMissingPathCorrection(t *testing.T) {
 			}
 		},
 	}
-	rt := New(Config{Catalog: newCatalog(t, model, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", builtins.Local(dir)))}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
+	rt := New(Config{Catalog: newCatalog(t, model, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(dir)))}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
 	id, err := rt.CreateSession(ctx, durable.CreateSession{AgentID: "default"})
 	if err != nil {
 		t.Fatal(err)
@@ -886,7 +885,7 @@ func bindLocalDocs(dir string) vfs.OpenVFS {
 				return vfs.Tree()(ctx, sid, req)
 			}
 		}
-		return vfs.Tree(vfs.At("docs", builtins.Local(dir)))(ctx, sid, req)
+		return vfs.Tree(vfs.At("docs", vfs.Local(dir)))(ctx, sid, req)
 	}
 }
 
@@ -1080,7 +1079,7 @@ func TestCreateSessionMountsThenPromptTokensRemount(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("from-workspace"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rt := New(Config{Catalog: newCatalog(t, &testkit.ScriptedModel{InvokeFn: workspaceReadModel}, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", builtins.Local(dir)))}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
+	rt := New(Config{Catalog: newCatalog(t, &testkit.ScriptedModel{InvokeFn: workspaceReadModel}, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(dir)))}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
 	id, err := rt.CreateSession(ctx, durable.CreateSession{
 		AgentID: "default",
 		Mounts: []durable.MountRecipe{{
@@ -1122,7 +1121,7 @@ func TestBadWorkspaceBindingFailsTurn(t *testing.T) {
 	ctx := t.Context()
 	missing := filepath.Join(t.TempDir(), "missing")
 	model := &testkit.ScriptedModel{InvokeFn: workspaceReadModel}
-	rt := New(Config{Catalog: newCatalog(t, model, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", builtins.Local(missing)))}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
+	rt := New(Config{Catalog: newCatalog(t, model, durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(missing)))}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})
 	id, err := rt.CreateSession(ctx, durable.CreateSession{AgentID: "default"})
 	if err != nil {
 		t.Fatal(err)

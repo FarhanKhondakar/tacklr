@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/internal/testdrive"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -48,7 +47,7 @@ func TestWorkspace_namedUnionListsAndReadsAliases(t *testing.T) {
 
 func TestWorkspace_duplicateAliasIsAmbiguous(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	_, err := vfs.Tree(vfs.At("legal", builtins.Local(a)), vfs.At("legal", builtins.Local(b)))(t.Context(), t.Name(), vfs.Request{})
+	_, err := vfs.Tree(vfs.At("legal", vfs.Local(a)), vfs.At("legal", vfs.Local(b)))(t.Context(), t.Name(), vfs.Request{})
 	if !errors.Is(err, vfs.ErrAmbiguous) {
 		t.Fatalf("dup alias = %v", err)
 	}
@@ -61,8 +60,8 @@ func TestWorkspace_writableMemberAndReadOnlyMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	ms, err := vfs.Tree(
-		vfs.At("legal", builtins.Local(host)),
-		vfs.At("ro", builtins.Local(host)).ReadOnly(),
+		vfs.At("legal", vfs.Local(host)),
+		vfs.At("ro", vfs.Local(host)).ReadOnly(),
 	)(ctx, t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)

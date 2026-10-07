@@ -22,8 +22,8 @@
 //
 // # Engrams as files (vfs.Provider)
 //
-// brain.Open returns a vfs.OpenFunc so first-class objects appear as Markdown + YAML
-// files (vfs imports stay one-way: this package imports vfs). Layout is host-chosen:
+// brain/engram.Open returns a vfs.Open so first-class objects appear as Markdown + YAML
+// files. This package does not import vfs. Layout is host-chosen:
 // mode=prefix (default /engram/<kind-slug>/<slug>.md) or mode=roots (/deal/acme.md).
 // Kind names are host KindSpecs and must be path-safe (no '/' or '..'). Only parent
 // kinds are directories; parts/chunks are not files. Write/Close/PutFile parse,

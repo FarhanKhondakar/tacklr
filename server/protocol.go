@@ -9,22 +9,34 @@ import (
 	"github.com/ryanaldo34/tacklr"
 
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/interrupt"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
 )
 
-// Conn is one client connection (WebSocket session).
-type Conn struct {
-	Writer   MessageWriter
-	RPC      *ClientBridge
-	Security *tacklrsecurity.Context
-
-	setSecurity func(tacklrsecurity.Context)
+// Ask is how the active protocol reaches the program on the other end of the
+// connection during a turn. That program belongs to the caller. This package
+// does not implement it. A nil Ask cannot answer mid-turn.
+type Ask interface {
+	Ready(ctx context.Context) error
+	NoteHello(params json.RawMessage)
+	FormSupported() bool
+	Permission(ctx context.Context, sessionID, messageID string, perm interrupt.ToolPermissionInterrupt) (resolution []byte, cancelled bool, err error)
+	Elicit(ctx context.Context, sessionID, messageID, question string, opts []interrupt.UserChoice) (action string, resolution []byte, err error)
 }
 
-func (c *Conn) establishSecurity(securityContext tacklrsecurity.Context) {
+// Conn is one connection for the turn that is running now.
+type Conn struct {
+	Writer      MessageWriter
+	Ask         Ask
+	Security    *tacklrsecurity.Context
+	SetSecurity func(tacklrsecurity.Context)
+}
+
+// EstablishSecurity stores the authenticated context and notifies SetSecurity.
+func (c *Conn) EstablishSecurity(securityContext tacklrsecurity.Context) {
 	c.Security = &securityContext
-	if c.setSecurity != nil {
-		c.setSecurity(securityContext)
+	if c.SetSecurity != nil {
+		c.SetSecurity(securityContext)
 	}
 }
 
@@ -59,7 +71,7 @@ type HTTPRoute struct {
 
 // Protocol is the host extension point for streaming and delivery over durable.Runtime.
 //
-// ACP is the native implementation (NewACPProtocol). Hosts implement Protocol to
+// The ACP built-in is package server/acp. Hosts implement Protocol to
 // define their own wire: HTTP/WebSocket routes, frame encoding, and HITL resume.
 // The kernel does not import protocol types. Map wire auth into durable.AuthContext
 // on Prompt/Resume; call RunTurn to pump Runtime.Subscribe through OnStreamEvent.
@@ -168,4 +180,13 @@ type PromptOrResume struct {
 	Prompt durable.Prompt
 	Resume *durable.Resume
 	After  durable.Seq
+}
+
+// MessageWriter is the sink a Protocol uses for results and streamed frames.
+// Each protocol supplies an implementation for its own wire.
+type MessageWriter interface {
+	WriteResult(id json.RawMessage, result any) error
+	// WriteError writes a failure. Implementations must not leak internal details.
+	WriteError(id json.RawMessage, err error) error
+	WriteFrame(data []byte) error
 }

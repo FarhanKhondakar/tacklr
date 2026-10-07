@@ -7,31 +7,32 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/email"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/vfs"
+	"github.com/ryanaldo34/tacklr/web"
 )
 
 type hostMail struct{}
 
-func (hostMail) Kind() builtins.ProviderKind { return builtins.ProviderGmail }
+func (hostMail) Kind() email.ProviderKind { return email.ProviderGmail }
 func (hostMail) Validate(context.Context) error {
 	return nil
 }
-func (hostMail) ReadInbox(context.Context, builtins.ReadInboxRequest) (builtins.Inbox, error) {
-	return builtins.Inbox{}, nil
+func (hostMail) ReadInbox(context.Context, email.ReadInboxRequest) (email.Inbox, error) {
+	return email.Inbox{}, nil
 }
-func (hostMail) SendEmail(context.Context, builtins.SendEmailRequest) (builtins.SentEmail, error) {
-	return builtins.SentEmail{}, nil
+func (hostMail) SendEmail(context.Context, email.SendEmailRequest) (email.SentEmail, error) {
+	return email.SentEmail{}, nil
 }
 
 // TestPrompt_hostPickedBuiltinToolsReachTheModel: tools constructed from
-// package builtins and listed on AgentOptions.Tools are registered for the turn.
+// package email or web and listed on AgentOptions.Tools are registered for the turn.
 func TestPrompt_hostPickedBuiltinToolsReachTheModel(t *testing.T) {
 	ctx := t.Context()
 	mail := hostMail{}
-	exa := builtins.NewExa("test-key")
+	client := web.NewExa("test-key")
 	var names []string
 	model := &testkit.ScriptedModel{
 		InvokeFn: func(_ context.Context, _ []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
@@ -49,10 +50,10 @@ func TestPrompt_hostPickedBuiltinToolsReachTheModel(t *testing.T) {
 	rt := New(Config{Catalog: newCatalog(t, model, durable.AgentSpec{
 		Options: tacklr.AgentOptions{
 			Tools: []*tacklr.Tool{
-				builtins.ReadInbox(mail),
-				builtins.SendEmail(mail),
-				builtins.WebSearch(exa),
-				builtins.WebFetch(exa),
+				email.ReadInbox(mail),
+				email.SendEmail(mail),
+				web.WebSearch(client),
+				web.WebFetch(client),
 			},
 		},
 	}), Snapshots: NewMemorySnapshot(), Projection: vfs.DirectProjection{}})

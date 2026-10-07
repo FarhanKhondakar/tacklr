@@ -77,12 +77,15 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/brain"
+	"github.com/ryanaldo34/tacklr/brain/engram"
 	"github.com/ryanaldo34/tacklr/brain/helixgraph"
 	"github.com/ryanaldo34/tacklr/brain/postgres"
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/web"
+	"github.com/ryanaldo34/tacklr/openai"
 	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	"github.com/ryanaldo34/tacklr/server"
+	"github.com/ryanaldo34/tacklr/server/acp"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -101,7 +104,7 @@ func main() {
 	}
 	defer func() { _ = shutdown(context.Background()) }()
 
-	model := builtins.NewOpenAIInferenceStrategy(&http.Client{Timeout: 2 * time.Minute})
+	model := openai.NewOpenAIInferenceStrategy(&http.Client{Timeout: 2 * time.Minute})
 	model.WithURL(os.Getenv("OPENAI_BASE_URL")).
 		WithApiKey(os.Getenv("OPENAI_API_KEY")).
 		WithModel(os.Getenv("OPENAI_MODEL"))
@@ -146,7 +149,7 @@ func main() {
 	if err := os.MkdirAll(filepath.Join(jail, "skills"), 0o750); err != nil {
 		log.Fatal(err)
 	}
-	exa := builtins.NewExa(os.Getenv("EXA_API_KEY"))
+	client := web.NewExa(os.Getenv("EXA_API_KEY"))
 
 	cat := durable.NewCatalog("agent")
 	cat.Register("agent", durable.AgentSpec{
@@ -165,12 +168,12 @@ func main() {
 				Memory:    "Memory",
 			},
 			Tools: []*tacklr.Tool{
-				builtins.WebSearch(exa),
-				builtins.WebFetch(exa),
+				web.WebSearch(client),
+				web.WebFetch(client),
 			},
 		},
 		OpenVFS:    openVFS(jail, eng, ns),
-		OpenSkills: vfs.Tree(vfs.At("skills", vfs.Union(builtins.Local(filepath.Join(jail, "skills"))))),
+		OpenSkills: vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(filepath.Join(jail, "skills"))))),
 	})
 
 	snaps := inprocess.NewMemorySnapshot()
@@ -179,7 +182,7 @@ func main() {
 		Snapshots:  snaps,
 		Projection: vfs.DirectProjection{},
 	})
-	srv := server.NewServer(rt, cat, server.NewACPProtocol(nil)).AllowAnonymousNetwork()
+	srv := server.NewServer(rt, cat, acp.New(nil)).AllowAnonymousNetwork()
 	log.Printf("ACP on http://127.0.0.1:8080/acp")
 	if err := srv.ServeHTTP(ctx, "127.0.0.1:8080"); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
@@ -189,25 +192,25 @@ func main() {
 func openVFS(jail string, eng *brain.Engine, ns brain.Namespace) vfs.OpenVFS {
 	return func(ctx context.Context, sessionID string, req vfs.Request) (*vfs.MountSession, error) {
 		members := []vfs.Member{
-			vfs.At("work", builtins.Local(jail)),
-			vfs.At("engram", brain.Open(eng, brain.Scope{Namespace: ns})),
-			vfs.At("memory", builtins.Memory()),
+			vfs.At("work", vfs.Local(jail)),
+			vfs.At("engram", engram.Open(eng, brain.Scope{Namespace: ns})),
+			vfs.At("memory", vfs.Memory()),
 		}
 		if b, ok := vfs.BindingByName(req.Bindings, "drive"); ok && strings.TrimSpace(b.Auth.Token) != "" {
 			h := vfs.NewTokenHolder(b.Auth)
-			api, err := builtins.NewGoogleDrive(ctx, h)
+			api, err := vfs.NewGoogleDrive(ctx, h)
 			if err != nil {
 				return nil, err
 			}
-			members = append(members, vfs.At("drive", builtins.Drive(api)))
+			members = append(members, vfs.At("drive", vfs.Drive(api)))
 		}
 		if b, ok := vfs.BindingByName(req.Bindings, "sharepoint"); ok && strings.TrimSpace(b.Auth.Token) != "" {
 			h := vfs.NewTokenHolder(b.Auth)
-			api, err := builtins.NewGraph(h, "", nil)
+			api, err := vfs.NewGraph(h, "", nil)
 			if err != nil {
 				return nil, err
 			}
-			members = append(members, vfs.At("sharepoint", builtins.Graph(api, h, b.Params[vfs.ParamAccount])))
+			members = append(members, vfs.At("sharepoint", vfs.Graph(api, h, b.Params[vfs.ParamAccount])))
 		}
 		return vfs.Tree(members...)(ctx, sessionID, req)
 	}
@@ -258,14 +261,14 @@ Built-in tools that need a client use the same pattern. You construct them and p
 
 | You construct | Closed into |
 |---------------|-------------|
-| `builtins.ReadInbox` / `builtins.SendEmail` | `read_inbox`, `send_email` |
-| `builtins.WebSearch` / `builtins.WebFetch` | `web_search`, `web_fetch` |
+| `email.ReadInbox` / `email.SendEmail` | `read_inbox`, `send_email` |
+| `web.WebSearch` / `web.WebFetch` | `web_search`, `web_fetch` |
 | `MountSession` | `read`, `write`, `write_document`, `write_spreadsheet`, `run_command` |
 | `SkillsSession` (`OpenSkills`) | `read_skill` |
 | `Brain` | knowledge tools (`search`, `save_*`, …) |
 | index bridge (from Brain + VFS) | `index_file`, `unindex` |
 
-Put optional builtins on `AgentOptions.Tools`. Swap the fake the same way: `Tools: []*tacklr.Tool{builtins.ReadInbox(fakeMail)}`, `Brain: testEngine`, a temp `MountSession`. Details: [docs/tools.md](docs/tools.md).
+Put optional tools on `AgentOptions.Tools`. Swap the fake the same way: `Tools: []*tacklr.Tool{email.ReadInbox(fakeMail)}`, `Brain: testEngine`, a temp `MountSession`. Details: [docs/tools.md](docs/tools.md).
 
 ### Session data
 
@@ -297,9 +300,9 @@ Register nested agents on `AgentOptions.Specialists`. Tools start work through `
 | Host tools | Your functions; close over clients in the constructor | [docs/tools.md](docs/tools.md) |
 | MCP | External tool servers | [`mcp`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/mcp) |
 | Skills | `SKILL.md` catalogs from `OpenSkills`; the model reads them only through `read_skill` | [`skills`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/skills) |
-| Model | `tacklr.InferenceStrategy`; OpenAI-compatible client is `builtins.NewOpenAIInferenceStrategy` | [`tacklr`](https://pkg.go.dev/github.com/ryanaldo34/tacklr) · [`builtins`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/builtins) |
-| Web | `web_search` and `web_fetch` via `builtins.WebSearch` / `builtins.WebFetch` | [`builtins`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/builtins) |
-| Email | `read_inbox` and permission-gated `send_email` via `builtins.ReadInbox` / `builtins.SendEmail` | [`builtins`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/builtins) |
+| Model | `tacklr.InferenceStrategy`; OpenAI-compatible client is `openai.NewOpenAIInferenceStrategy` | [`openai`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/openai) |
+| Web | `web_search` and `web_fetch` via `web.WebSearch` / `web.WebFetch` | [`web`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/web) |
+| Email | `read_inbox` and permission-gated `send_email` via `email.ReadInbox` / `email.SendEmail` | [`email`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/email) |
 | Server | `Protocol` over Runtime; ACP is the native option | [`server`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/server) |
 | Telemetry | `telemetry.Init`: OTLP traces/metrics/logs; one `tacklr.turn` span per prompt or resume | [`telemetry`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/telemetry) |
 
@@ -312,7 +315,7 @@ When VFS is wired, the harness injects file tools over virtual paths only. `run_
 | Doc | What it covers |
 |-----|----------------|
 | [docs/durable.md](docs/durable.md) | Runtime: in-process, Temporal; three data planes; HITL; children; auth |
-| [docs/tools.md](docs/tools.md) | Tool clients: constructor closures, tests, builtins |
+| [docs/tools.md](docs/tools.md) | Tool clients: constructor closures and tests |
 | [docs/vfs.md](docs/vfs.md) | Mounts, content IR, providers, FUSE |
 | [docs/knowledge.md](docs/knowledge.md) | Brain: Engrams, search, graph, tools |
 | [docs/fuse-vfs-run-command.md](docs/fuse-vfs-run-command.md) | How `run_command` and the FUSE projection fit |
@@ -326,13 +329,16 @@ When VFS is wired, the harness injects file tools over virtual paths only. `run_
 | Package | Role |
 |---------|------|
 | `tacklr` | Harness, tools, plan loop, specialists, messages, checkpoints |
-| `builtins` | Optional tools (email, Exa), VFS constructors, OpenAI model client |
-| `vfs` | Virtual filesystem, mounts, content IR |
+| `vfs` | Virtual filesystem, mounts, backend constructors |
 | `vfsindex` | Optional mount → brain ingest |
 | `brain` | Knowledge engine, store/graph interfaces, in-memory backends |
 | `brain/postgres` | Optional Postgres `brain.Store` |
 | `brain/helixgraph` | Optional Helix graph adapter |
-| `server` | Protocol host over Runtime |
+| `brain/engram` | Optional brain store mounted as files |
+| `openai` | OpenAI-compatible model client |
+| `email` | Optional inbox and send tools. `email/gmail` and `email/outlook` are the adapters |
+| `web` | Optional web search and fetch. Exa is the current client |
+| `server` | Protocol host over Runtime. `server/acp` is the ACP built-in |
 | `durable` | Session Runtime, SnapshotStore, SecretStorage |
 | `interrupt` | Pause / resume types |
 | `mcp` | MCP config types |
@@ -364,9 +370,9 @@ Where to look:
 | Specialists / children | `subagents.go`, `durable/child.go`, `durable/inprocess/` |
 | Runtime | `durable/runtime.go`, `docs/durable.md` |
 | VFS | `vfs/`, `docs/vfs.md` |
-| Model client | `builtins/openai.go` (`tacklr.InferenceStrategy`) |
+| Model client | `openai/` (`tacklr.InferenceStrategy`) |
 | Knowledge | `brain/`, `brain/postgres/`, `brain/helixgraph/`, `docs/knowledge.md` |
-| ACP / protocols | `server/` |
+| ACP / protocols | `server/`, `server/acp/` |
 
 Issues and pull requests are welcome. Match the surrounding code: `gofmt`, `go vet`, `golangci-lint`.
 

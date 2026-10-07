@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ryanaldo34/tacklr/brain"
+	"github.com/ryanaldo34/tacklr/brain/engram"
 	"github.com/ryanaldo34/tacklr/vfs"
 	"github.com/ryanaldo34/tacklr/vfsindex"
 )
@@ -635,7 +636,7 @@ func TestBrainTools_engramPathGraph(t *testing.T) {
 	ns := mustNS(t, "id", uuid.NewString())
 	ms := mustMountTree(t, "engram-graph",
 		vfs.At("work", vfs.Local(t.TempDir())),
-		vfs.At("engram", brain.Open(eng, brain.Scope{Namespace: ns})),
+		vfs.At("engram", engram.Open(eng, brain.Scope{Namespace: ns})),
 	)
 	h := mustNewTurnManager(t, AgentOptions{
 		SessionID:    "engram-graph",

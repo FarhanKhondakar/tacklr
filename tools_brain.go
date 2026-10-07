@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ryanaldo34/tacklr/brain"
+	"github.com/ryanaldo34/tacklr/brain/engram"
 	"github.com/ryanaldo34/tacklr/vfs"
 	"github.com/ryanaldo34/tacklr/vfsindex"
 )
@@ -52,7 +53,7 @@ func (b brainTools) brainMountForKind(kind string) (vfs.MountSpec, bool) {
 	if b.deps.VFS == nil {
 		return vfs.MountSpec{}, false
 	}
-	return brain.MountForKind(b.deps.VFS.Specs(), kind)
+	return engram.MountForKind(b.deps.VFS.Specs(), kind)
 }
 
 type readObjectArgs struct {
@@ -598,9 +599,9 @@ func (b brainTools) saveAsFile(ctx context.Context, kind string, args saveObject
 	if err := b.deps.VFS.MkdirAll(ctx, path.Dir(vpath)); err != nil {
 		return saveFileResult{}, err
 	}
-	f := brain.EngramFile{
+	f := engram.EngramFile{
 		Kind:       kind,
-		Slug:       brain.Slugify(title),
+		Slug:       engram.Slugify(title),
 		Title:      title,
 		Properties: args.Properties,
 		Body:       body,
@@ -613,7 +614,7 @@ func (b brainTools) saveAsFile(ctx context.Context, kind string, args saveObject
 		// Allocate before write so commit skips vfs_path lookup and we skip a post-write Get.
 		f.ID = uuid.New()
 	}
-	raw, err := brain.FormatEngram(f)
+	raw, err := engram.FormatEngram(f)
 	if err != nil {
 		return saveFileResult{}, err
 	}
@@ -650,15 +651,15 @@ func (b brainTools) resolveEngramSavePath(ctx context.Context, kind, title, obje
 		}
 		return "", fmt.Errorf("object_id %s has no vfs_path; cannot update as file", id)
 	}
-	slug := brain.Slugify(title)
+	slug := engram.Slugify(title)
 	if slug == "" {
 		slug = "note"
 	}
-	mode := brain.ModePrefix
+	mode := engram.ModePrefix
 	if spec.Params != nil && spec.Params["mode"] != "" {
 		mode = spec.Params["mode"]
 	}
-	base := brain.EngramPath(spec.Point, mode, kind, slug)
+	base := engram.EngramPath(spec.Point, mode, kind, slug)
 	if _, err := b.deps.VFS.Stat(ctx, base); err == nil {
 		base = strings.TrimSuffix(base, ".md") + "-" + uuid.New().String()[:8] + ".md"
 	} else if !errors.Is(err, vfs.ErrNotExist) {

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -23,7 +22,7 @@ func TestOpenTurnVFS_nilWhenNoOpenOrProjection(t *testing.T) {
 	if err != nil || ms != nil {
 		t.Fatalf("no OpenVFS: %v %v", ms, err)
 	}
-	ms, err = OpenTurnVFS(t.Context(), "s", durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("scratch", builtins.Local(t.TempDir())))}, nil, downProjection{})
+	ms, err = OpenTurnVFS(t.Context(), "s", durable.AgentSpec{OpenVFS: vfs.Tree(vfs.At("scratch", vfs.Local(t.TempDir())))}, nil, downProjection{})
 	if err != nil || ms != nil {
 		t.Fatalf("projection down: %v %v", ms, err)
 	}
@@ -41,8 +40,8 @@ func TestOpenTurnSessions_skillsWithoutProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws, skills, err := OpenTurnSessions(ctx, "s", durable.AgentSpec{
-		OpenVFS:    vfs.Tree(vfs.At("work", builtins.Local(t.TempDir()))),
-		OpenSkills: vfs.Tree(vfs.At("skills", builtins.Local(pack))),
+		OpenVFS:    vfs.Tree(vfs.At("work", vfs.Local(t.TempDir()))),
+		OpenSkills: vfs.Tree(vfs.At("skills", vfs.Local(pack))),
 	}, nil, downProjection{})
 	if err != nil || ws != nil || skills == nil {
 		t.Fatalf("workspace=%v skills=%v err=%v", ws, skills, err)
@@ -56,7 +55,7 @@ func TestOpenTurnSessions_skillsWithoutProjection(t *testing.T) {
 
 func TestOpenTurnSessions_skillsError(t *testing.T) {
 	_, _, err := OpenTurnSessions(t.Context(), "s", durable.AgentSpec{
-		OpenVFS: vfs.Tree(vfs.At("work", builtins.Local(t.TempDir()))),
+		OpenVFS: vfs.Tree(vfs.At("work", vfs.Local(t.TempDir()))),
 		OpenSkills: func(context.Context, string, vfs.Request) (*vfs.MountSession, error) {
 			return nil, os.ErrPermission
 		},
@@ -73,7 +72,7 @@ func (f failAttach) Attach(*vfs.MountSession, string) error { return f.err }
 
 func TestOpenTurnVFS_attachError(t *testing.T) {
 	_, err := OpenTurnVFS(t.Context(), "s", durable.AgentSpec{
-		OpenVFS: vfs.Tree(vfs.At("scratch", builtins.Local(t.TempDir()))),
+		OpenVFS: vfs.Tree(vfs.At("scratch", vfs.Local(t.TempDir()))),
 	}, nil, failAttach{err: os.ErrPermission})
 	if err == nil {
 		t.Fatal("want attach error")

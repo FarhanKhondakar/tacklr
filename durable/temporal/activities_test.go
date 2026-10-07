@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/durable/inprocess"
 	adapter "github.com/ryanaldo34/tacklr/durable/internal"
@@ -62,7 +61,7 @@ func TestActivities_childTurnUsesParentSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotToken string
-	open := vfs.Tree(vfs.At("docs", builtins.Local(dir)))
+	open := vfs.Tree(vfs.At("docs", vfs.Local(dir)))
 	cat := durable.NewCatalog("default")
 	cat.Register("default", durable.AgentSpec{
 		Options: tacklr.AgentOptions{Model: &testkit.ScriptedModel{

@@ -12,7 +12,7 @@
 //   - MountSpec — durable mount description (checkpoint-safe; Members = /workspace aliases)
 //   - WorkspacePoint — /workspace (the only top-level mount)
 //   - Provider / Open / S3API / DriveAPI / GraphAPI — custom backends (Blob uses S3API).
-//     Hosts construct default backends from package builtins (Local, S3, Blob,
+//     Hosts construct default backends from this package (Local, S3, Blob,
 //     Drive, Graph, Memory, NewGoogleDrive, NewGraph).
 //   - File, FileInfo, DirEntry — I/O types (File is Close+Stat; io.Reader / io.ReaderAt / io.Writer via comma-ok)
 //   - Document / Textual / Structured / TextDocument — content IR

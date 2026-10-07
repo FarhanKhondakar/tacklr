@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/internal/testdrive"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -18,7 +17,7 @@ func TestTree_hostMembersUnderWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ms, err := vfs.Tree(vfs.At("work", builtins.Local(dir)))(ctx, t.Name(), vfs.Request{})
+	ms, err := vfs.Tree(vfs.At("work", vfs.Local(dir)))(ctx, t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,14 +37,14 @@ func TestTree_hostMembersUnderWorkspace(t *testing.T) {
 
 func TestTree_duplicateAtIsAmbiguous(t *testing.T) {
 	dir := t.TempDir()
-	_, err := vfs.Tree(vfs.At("work", builtins.Local(dir)), vfs.At("work", builtins.Local(dir)))(t.Context(), t.Name(), vfs.Request{})
+	_, err := vfs.Tree(vfs.At("work", vfs.Local(dir)), vfs.At("work", vfs.Local(dir)))(t.Context(), t.Name(), vfs.Request{})
 	if !errors.Is(err, vfs.ErrAmbiguous) {
 		t.Fatalf("dup At = %v", err)
 	}
 }
 
 func TestTree_requiresNameAndOpen(t *testing.T) {
-	if _, err := vfs.Tree(vfs.At("", builtins.Local(t.TempDir())))(t.Context(), t.Name(), vfs.Request{}); err == nil {
+	if _, err := vfs.Tree(vfs.At("", vfs.Local(t.TempDir())))(t.Context(), t.Name(), vfs.Request{}); err == nil {
 		t.Fatal("empty At name")
 	}
 	if _, err := vfs.Tree(vfs.At("work", nil))(t.Context(), t.Name(), vfs.Request{}); err == nil {
@@ -57,7 +56,7 @@ func TestTree_skipsNilProvider(t *testing.T) {
 	skip := vfs.Open(func(context.Context, string, vfs.Binding) (vfs.Provider, error) {
 		return nil, nil
 	})
-	ms, err := vfs.Tree(vfs.At("gone", skip), vfs.At("work", builtins.Local(t.TempDir())))(t.Context(), t.Name(), vfs.Request{})
+	ms, err := vfs.Tree(vfs.At("gone", skip), vfs.At("work", vfs.Local(t.TempDir())))(t.Context(), t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +70,7 @@ func TestTree_skipsNilProvider(t *testing.T) {
 func TestTree_readOnlyHostMember(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
-	ms, err := vfs.Tree(vfs.At("ro", builtins.Local(dir)).ReadOnly())(ctx, t.Name(), vfs.Request{})
+	ms, err := vfs.Tree(vfs.At("ro", vfs.Local(dir)).ReadOnly())(ctx, t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +134,7 @@ func TestTree_unionSkills(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(b, "two.md"), []byte("2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ms, err := vfs.Tree(vfs.At("skills", vfs.Union(builtins.Local(a), builtins.Local(b))))(ctx, t.Name(), vfs.Request{})
+	ms, err := vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(a), vfs.Local(b))))(ctx, t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,9 +151,9 @@ func TestTree_unionSkills(t *testing.T) {
 
 func TestTree_indexedPolicyOnMember(t *testing.T) {
 	ms, err := vfs.Tree(
-		vfs.At("work", builtins.Local(t.TempDir())),
-		vfs.At("auto", builtins.Local(t.TempDir())).Indexed("prefix"),
-		vfs.At("off", builtins.Local(t.TempDir())).Indexed("none"),
+		vfs.At("work", vfs.Local(t.TempDir())),
+		vfs.At("auto", vfs.Local(t.TempDir())).Indexed("prefix"),
+		vfs.At("off", vfs.Local(t.TempDir())).Indexed("none"),
 	)(t.Context(), t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +174,7 @@ func TestTree_indexedPolicyOnMember(t *testing.T) {
 }
 
 func TestTree_memberProfileAndBindParams(t *testing.T) {
-	ms, err := vfs.Tree(vfs.At("discovery", builtins.Memory()).Profile("brain"))(t.Context(), t.Name(), vfs.Request{
+	ms, err := vfs.Tree(vfs.At("discovery", vfs.Memory()).Profile("brain"))(t.Context(), t.Name(), vfs.Request{
 		Bindings: []vfs.Binding{{
 			Params: map[string]string{vfs.ParamName: "discovery", "mode": "roots", "kind": "Discovery"},
 		}},

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -21,9 +20,9 @@ func TestMountSession_localSession(t *testing.T) {
 	ctx := t.Context()
 	base := t.TempDir()
 	ms, err := vfs.Tree(
-		vfs.At("work", builtins.Local(base)),
-		vfs.At("nested", builtins.Local(base)).ReadOnly(),
-		vfs.At("ab", builtins.Local(base)),
+		vfs.At("work", vfs.Local(base)),
+		vfs.At("nested", vfs.Local(base)).ReadOnly(),
+		vfs.At("ab", vfs.Local(base)),
 	)(ctx, "sess-1", vfs.Request{Bindings: []vfs.Binding{
 		{Params: map[string]string{vfs.ParamName: "nested", "subpath": "nested"}},
 		{Params: map[string]string{vfs.ParamName: "ab", "subpath": "ab"}},
@@ -142,7 +141,7 @@ func TestMountSession_localSession(t *testing.T) {
 		t.Fatalf("after unmount: %v", err)
 	}
 
-	ms2, err := vfs.Tree(vfs.At("work", builtins.Local(base)))(ctx, "sess-2", vfs.Request{})
+	ms2, err := vfs.Tree(vfs.At("work", vfs.Local(base)))(ctx, "sess-2", vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +162,7 @@ func TestMountSession_localSession(t *testing.T) {
 // copies through OpenFile; oversize writes and unmounted/invalid paths fail closed.
 func TestMountSession_memoryWriteAndLimits(t *testing.T) {
 	ctx := t.Context()
-	ms, err := vfs.Tree(vfs.At("mem", builtins.Memory()))(ctx, "mem-sess", vfs.Request{})
+	ms, err := vfs.Tree(vfs.At("mem", vfs.Memory()))(ctx, "mem-sess", vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,8 +225,8 @@ func TestDocument_session(t *testing.T) {
 	ctx := t.Context()
 	base := t.TempDir()
 	ms, err := vfs.Tree(
-		vfs.At("work", builtins.Local(base)),
-		vfs.At("ro", builtins.Local(base)).ReadOnly(),
+		vfs.At("work", vfs.Local(base)),
+		vfs.At("ro", vfs.Local(base)).ReadOnly(),
 	)(ctx, "doc-sess", vfs.Request{Bindings: []vfs.Binding{{
 		Params: map[string]string{vfs.ParamName: "ro", "subpath": "ro"},
 	}}})
@@ -551,7 +550,7 @@ func TestTextDocument_lines(t *testing.T) {
 // TestMountSession_configErrors covers Attach, SpecAt, and codec registry.
 func TestMountSession_configErrors(t *testing.T) {
 	ctx := t.Context()
-	p, err := builtins.Local(t.TempDir())(ctx, "s", vfs.Binding{})
+	p, err := vfs.Local(t.TempDir())(ctx, "s", vfs.Binding{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +639,7 @@ func (blankTypeCodec) Decode(context.Context, string, string, []byte) (vfs.Docum
 
 func TestLocal_rejectsUnsafeConfig(t *testing.T) {
 	ctx := t.Context()
-	open := builtins.Local(t.TempDir())
+	open := vfs.Local(t.TempDir())
 	if _, err := open(ctx, "s", vfs.Binding{Params: map[string]string{"subpath": ".."}}); err == nil {
 		t.Fatal("subpath ..")
 	}
@@ -653,7 +652,7 @@ func TestLocal_rejectsUnsafeConfig(t *testing.T) {
 	if _, err := open(ctx, "../bad", vfs.Binding{Params: map[string]string{"session_scoped": "true"}}); err == nil {
 		t.Fatal("unsafe session id")
 	}
-	if _, err := builtins.Local("rel")(ctx, "s", vfs.Binding{}); err == nil {
+	if _, err := vfs.Local("rel")(ctx, "s", vfs.Binding{}); err == nil {
 		t.Fatal("relative base")
 	}
 	file, err := os.CreateTemp(t.TempDir(), "notdir")
@@ -661,7 +660,7 @@ func TestLocal_rejectsUnsafeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = file.Close()
-	if _, err := builtins.Local(file.Name())(ctx, "s", vfs.Binding{}); err == nil {
+	if _, err := vfs.Local(file.Name())(ctx, "s", vfs.Binding{}); err == nil {
 		t.Fatal("file as base")
 	}
 	if _, err := vfs.NewLocalProvider("relative"); err == nil {

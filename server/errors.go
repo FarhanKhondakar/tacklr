@@ -1,8 +1,6 @@
 package server
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -23,15 +21,6 @@ var (
 	ErrAuthorizationDenied    = tacklrsecurity.ErrAuthorizationDenied
 )
 
-// JSON-RPC 2.0 error codes.
-const (
-	jsonRPCCodeInvalidRequest = -32600
-	jsonRPCCodeMethodNotFound = -32601
-	jsonRPCCodeInternal       = -32603
-	jsonRPCCodeApplication    = -32000 // server/application errors (-32000..-32099)
-	jsonRPCCodeCancelled      = -32800 // request cancelled (ACP / LSP convention)
-)
-
 // clientError is a caller-facing error that unwraps to a sentinel.
 // When cause is set, errors.Is/As can also match the underlying failure.
 type clientError struct {
@@ -49,21 +38,14 @@ func (e *clientError) Unwrap() []error {
 	return []error{e.sentinel}
 }
 
-func clientErrorf(sentinel error, format string, args ...any) error {
-	return clientErrorCause(sentinel, nil, format, args...)
+// Errorf is a caller-facing error that unwraps to sentinel.
+func Errorf(sentinel error, format string, args ...any) error {
+	return ErrorCause(sentinel, nil, format, args...)
 }
 
-func clientErrorCause(sentinel, cause error, format string, args ...any) error {
+// ErrorCause is Errorf with an underlying cause for errors.Is.
+func ErrorCause(sentinel, cause error, format string, args ...any) error {
 	return &clientError{sentinel: sentinel, cause: cause, msg: fmt.Sprintf(format, args...)}
-}
-
-// reply writes a JSON-RPC result or error. err wins.
-func reply(w MessageWriter, id json.RawMessage, result any, err error) error {
-	if err != nil {
-		_ = w.WriteError(id, err)
-		return err
-	}
-	return w.WriteResult(id, result)
 }
 
 func IsClientError(err error) bool {
@@ -78,24 +60,4 @@ func PublicError(err error) error {
 		return err
 	}
 	return ErrInternal
-}
-
-// JSONRPCErrorCode maps err to a JSON-RPC 2.0 error code.
-func JSONRPCErrorCode(err error) int {
-	var ce *clientError
-	if errors.As(err, &ce) {
-		err = ce.sentinel
-		switch {
-		case errors.Is(err, ErrMethodNotFound):
-			return jsonRPCCodeMethodNotFound
-		case errors.Is(err, ErrInvalidRequest):
-			return jsonRPCCodeInvalidRequest
-		default:
-			return jsonRPCCodeApplication
-		}
-	}
-	if errors.Is(err, context.Canceled) {
-		return jsonRPCCodeCancelled
-	}
-	return jsonRPCCodeInternal
 }

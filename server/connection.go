@@ -9,13 +9,9 @@ import (
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
 )
 
-// HeaderAcpConnectionID is set on the WebSocket 101 response.
-const HeaderAcpConnectionID = "Acp-Connection-Id"
-
 // Connection is one WebSocket. Harness sessions live on durable.Runtime.
 type Connection struct {
 	ID     string
-	Bridge *ClientBridge
 	Writer MessageWriter
 
 	ctx    context.Context
@@ -25,13 +21,13 @@ type Connection struct {
 	security tacklrsecurity.Context
 }
 
-func (c *Connection) securityContext() tacklrsecurity.Context {
+func (c *Connection) SecurityContext() tacklrsecurity.Context {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.security
 }
 
-func (c *Connection) setSecurityContext(securityContext tacklrsecurity.Context) {
+func (c *Connection) SetSecurityContext(securityContext tacklrsecurity.Context) {
 	c.mu.Lock()
 	c.security = securityContext
 	c.mu.Unlock()
@@ -48,12 +44,11 @@ func NewConnectionRegistry() *ConnectionRegistry {
 	return &ConnectionRegistry{byID: make(map[string]*Connection)}
 }
 
-// Create registers a new connection. bridge/writer may be filled in after Accept.
-func (r *ConnectionRegistry) Create(bridge *ClientBridge, writer MessageWriter) *Connection {
+// Create registers a new connection. Writer may be filled in after Accept.
+func (r *ConnectionRegistry) Create(writer MessageWriter) *Connection {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Connection{
 		ID:     uuid.NewString(),
-		Bridge: bridge,
 		Writer: writer,
 		ctx:    ctx,
 		cancel: cancel,

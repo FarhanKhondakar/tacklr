@@ -62,8 +62,8 @@ The only top-level mount is **`/workspace`**. Hosts close over clients in `vfs.O
 
 ```go
 open := vfs.Tree(
-	vfs.At("work", builtins.Local("/var/agent/scratch")),
-	vfs.At("engram", brain.Open(eng, scope)),
+	vfs.At("work", vfs.Local("/var/agent/scratch")),
+	vfs.At("engram", engram.Open(eng, scope)),
 )
 ms, err := open(ctx, "sess-1", vfs.Request{})
 ```
@@ -72,14 +72,14 @@ User-owned Drive/Graph members are constructed from this turn’s bind (injected
 
 ```go
 func openVFS(ctx context.Context, id string, req vfs.Request) (*vfs.MountSession, error) {
-	members := []vfs.Member{vfs.At("work", builtins.Local(jail))}
+	members := []vfs.Member{vfs.At("work", vfs.Local(jail))}
 	if b, ok := vfs.BindingByName(req.Bindings, "drive"); ok && b.Auth.Token != "" {
 		h := vfs.NewTokenHolder(b.Auth)
-		api, err := builtins.NewGoogleDrive(ctx, h)
+		api, err := vfs.NewGoogleDrive(ctx, h)
 		if err != nil {
 			return nil, err
 		}
-		members = append(members, vfs.At("drive", builtins.Drive(api)))
+		members = append(members, vfs.At("drive", vfs.Drive(api)))
 	}
 	return vfs.Tree(members...)(ctx, id, req)
 }
@@ -129,7 +129,7 @@ Go zero-value `Binding` and ACP `readOnly` omitted stay **read-only**. Writable 
 
 Drive scopes: read-only `drive.readonly` (export-only). Writable needs **`drive`**, **`documents`**, and **`spreadsheets`**. `drive` is a restricted (CASA) scope; the token is not folder-scoped.
 
-Graph (OneDrive and SharePoint libraries): **`account`** is `organization` (default) or `personal`. Organization Open without `siteId` or `driveId` fails (`vfs: msgraph organization account requires siteId or driveId`). Personal uses `/me/drive`. Aliases: `enterprise` / `work` / `tenant` → organization; `consumer` / `msa` → personal. Read-only **`Files.Read`**; writable **`Files.ReadWrite`**. A SharePoint library also needs **`Sites.Read.All`** or **`Sites.ReadWrite.All`** as the **client** already consented. CASA: prefer `Files.ReadWrite` (user files) over `Files.ReadWrite.All` when it covers the bound drive. Graph files are real `.docx` / `.xlsx` (Word/Excel codecs). Native Google Docs/Sheets on a Drive member still use Docs/Sheets APIs. Hosts pass `builtins.Graph(api, holder, account)`; `account` on Graph is the default when a bind omits it.
+Graph (OneDrive and SharePoint libraries): **`account`** is `organization` (default) or `personal`. Organization Open without `siteId` or `driveId` fails (`vfs: msgraph organization account requires siteId or driveId`). Personal uses `/me/drive`. Aliases: `enterprise` / `work` / `tenant` → organization; `consumer` / `msa` → personal. Read-only **`Files.Read`**; writable **`Files.ReadWrite`**. A SharePoint library also needs **`Sites.Read.All`** or **`Sites.ReadWrite.All`** as the **client** already consented. CASA: prefer `Files.ReadWrite` (user files) over `Files.ReadWrite.All` when it covers the bound drive. Graph files are real `.docx` / `.xlsx` (Word/Excel codecs). Native Google Docs/Sheets on a Drive member still use Docs/Sheets APIs. Hosts pass `vfs.Graph(api, holder, account)`; `account` on Graph is the default when a bind omits it.
 
 Two surfaces, one document:
 
@@ -147,8 +147,8 @@ Docs **tables**: `kind=table` body is TSV (`A\tB`) **or** a GFM pipe table (`| A
 ```go
 // Host OpenVFS, after a drive bind:
 h := vfs.NewTokenHolder(b.Auth)
-api, err := builtins.NewGoogleDrive(ctx, h)
-members = append(members, vfs.At("drive", builtins.Drive(api)))
+api, err := vfs.NewGoogleDrive(ctx, h)
+members = append(members, vfs.At("drive", vfs.Drive(api)))
 ```
 
 Raw path I/O (absolute virtual paths only):
@@ -321,7 +321,7 @@ _ = ms.WriteDocument(ctx, text)
 ```go
 ctx := context.Background()
 
-ms, _ := vfs.Tree(vfs.At("work", builtins.Local("/var/agent/scratch")))(ctx, "sess-1", vfs.Request{})
+ms, _ := vfs.Tree(vfs.At("work", vfs.Local("/var/agent/scratch")))(ctx, "sess-1", vfs.Request{})
 
 _ = ms.WriteFile(ctx, "/workspace/work/note.txt", []byte("a\nb\nc\n"))
 
@@ -342,7 +342,7 @@ raw, _ := ms.ReadFile(ctx, "/workspace/work/note.txt")
 Lifecycle as a diagram:
 
 ```text
-1. Tree      vfs.Tree(vfs.At("work", builtins.Local(jail)))
+1. Tree      vfs.Tree(vfs.At("work", vfs.Local(jail)))
              /workspace/work → local folder (or S3 / Azure Blob prefix)
 
 2. Read      ReadText / OpenDocument
@@ -360,7 +360,7 @@ Lifecycle as a diagram:
 ### Same paths on S3 and Azure Blob
 
 ```text
-Mount:  /data  →  builtins.S3 (bucket + prefix) or builtins.Blob (container + prefix)
+Mount:  /data  →  vfs.S3 (bucket + prefix) or vfs.Blob (container + prefix)
 Read:   ReadText("/data/app.go")   // GetObject / DownloadStream → TextDocument
 Edit:   SetLine / ReplaceLines
 Write:  WriteDocument              // PutObject / UploadStream with Text() bytes
@@ -478,7 +478,7 @@ as Document/Chunk artifacts. Engram writes go through the Provider (`Put`), not 
 | `vfs` | Specs (incl. IndexPolicy string), `AfterPersist` hook only |
 | `brain` | Objects/props only; no VFS |
 | `vfsindex` | Both; owns `IndexPath` / `IndexPrefix` / schedulers / policy helpers |
-| harness (`tacklr`) | brain.Open + `/engram` default, skip-index on brain profile, tools |
+| harness (`tacklr`) | engram.Open + `/engram` default, skip-index on brain profile, tools |
 
 ### Host wiring
 

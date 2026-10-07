@@ -37,21 +37,21 @@ Or invoke the tool directly with that constructor. You do not mock `HarnessRunti
 
 Progress (`EmitUpdate`), park (`Park`), specialists (`RunSpecialist`), jobs (`Schedule` / `Jobs` / `CancelJob`), and session key-values (`StateGet` / `StateSet` / `StateDelete`). Hosts set those values on `CreateSession.State`, `Prompt.State`, or `Resume.State`. Close over clients in the constructor. Register named workers on in-process / Temporal `Config.Jobs`. Tools do not wait on jobs; a tool call already blocks the next model turn.
 
-## Optional builtins
+## Optional tools
 
-Package `builtins` exports optional tools. Construct them with a closed-over client and put the result on `AgentOptions.Tools`. The harness does not inject these from options fields.
+Packages `web` and `email` export optional tools. Construct them with a closed-over client and put the result on `AgentOptions.Tools`. The harness does not inject these from options fields.
 
 ```go
-exa := builtins.NewExa(os.Getenv("EXA_API_KEY"))
-mail := builtins.Gmail(gmailService)
+client := web.NewExa(os.Getenv("EXA_API_KEY"))
+mail := gmail.New(gmailService)
 
 opts := tacklr.AgentOptions{
     Model: model,
     Tools: []*tacklr.Tool{
-        builtins.WebSearch(exa),
-        builtins.WebFetch(exa),
-        builtins.ReadInbox(mail),
-        builtins.SendEmail(mail),
+        web.WebSearch(client),
+        web.WebFetch(client),
+        email.ReadInbox(mail),
+        email.SendEmail(mail),
     },
 }
 ```

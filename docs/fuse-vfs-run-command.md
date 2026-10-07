@@ -45,7 +45,7 @@ The **agent file catalog** is collapsed. Discovery (`find_files`, `find_content`
 
 **Production without a FUSE device.** `OpenTurnVFS` returns nil when `!projection.Available()`. There is no MountSession, so no VFS tools and no `run_command`. Tests that need the tree inject `DirectProjection`. Embedders that want the same in-process tree pass a `MountSession` themselves.
 
-**Path identity (shipped).** FUSE root is virtual `/`. The only `Specs()` point is `/workspace`. `FuseMount` rejects multi-segment points. Hosts `At("work", builtins.Local(jail))`. Agent tools take `/workspace/work/note.md`. Host commands take `workspace/work/note.md` relative to `HostDir()`.
+**Path identity (shipped).** FUSE root is virtual `/`. The only `Specs()` point is `/workspace`. `FuseMount` rejects multi-segment points. Hosts `At("work", vfs.Local(jail))`. Agent tools take `/workspace/work/note.md`. Host commands take `workspace/work/note.md` relative to `HostDir()`.
 
 **Byte identity (shipped).** Textual FUSE `Read` / `getattr` use `ReadText`. Binaries use `Stat` + `io.ReaderAt`. Writes are write-through, so host `rg` sees the last persist, not a dirty IR buffer.
 
@@ -60,7 +60,7 @@ The **agent file catalog** is collapsed. Discovery (`find_files`, `find_content`
 | Zero FUSE TTLs; single-segment reject; `HostDir`; `FuseAvailable`; `ErrFuseNotMounted` | `vfs/fuse_node.go`, `vfs/errors.go` |
 | Kernel identity smoke (skip without device) | `vfs/fuse_test.go` |
 | `VFSProjection` / `FuseProjection` / `DirectProjection` | `server/projection.go` |
-| FUSE attach; fail-hard on device + mount fail; skip remount if `HostDir` set | `durable.OpenTurnVFS` |
+| FUSE attach; fail-hard on device + mount fail; skip remount if `HostDir` set | `OpenTurnVFS` in `durable/internal/vfs.go` |
 | Turn-scoped mounts; TurnManager Close does not unmount | `openTurnVFS`, `EventStream.Close`, `TurnManager.Close` |
 | host `/workspace/work` | `OpenVFS` `At("work", Local(jail))` |
 | host skills packs | `OpenSkills` (host-only Tree; not on the agent `/workspace`) |
@@ -266,7 +266,7 @@ Each PR is independently reviewable. Do not combine Phase 3 removal with the `wr
 - `vfs/fuse_test.go` — kernel identity smoke
 - `vfs/document_session.go` — write-through `WriteDocument`
 - `server/projection.go` — `VFSProjection`
-- `durable/vfs.go` — `OpenTurnVFS`, `CloseTurnVFS`
+- `durable/internal/vfs.go` — `OpenTurnVFS`, `CloseTurnVFS`
 - `tools_vfs.go` — `read`, `write`, `run_command`
 - `tools_vfsindex.go` — `index_file` / `unindex` / `find_content` (until PR A)
 - `agent.go` — turn-scoped `Close` (does not close MountSession)
