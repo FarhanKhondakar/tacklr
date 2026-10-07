@@ -1,4 +1,4 @@
-package durable
+package session
 
 import (
 	"context"
@@ -6,10 +6,9 @@ import (
 	"github.com/ryanaldo34/tacklr"
 )
 
-// Runtime is the host session API. One backend runs one durable session
-// per session id. That backend implements Step, Signals, and Jobs.
-// Package durable owns the session loop. Leftover-tool and HITL rules live
-// in tacklr.Next.
+// Runtime is the host session API. One backend runs one session per id.
+// That backend implements Step, Mailbox, and Ledger. Package session owns
+// the session loop. Leftover-tool and HITL rules live in tacklr.Next.
 //
 // Prompt and Resume deliver work to the session. They do not return a harness.
 // Subscribe yields StreamEvent values (message, tool, yield, error, complete).
@@ -18,7 +17,7 @@ import (
 type Runtime interface {
 	Sessions
 	Control
-	Queue
+	Children
 }
 
 // Sessions is the session record: create it, destroy it, and read its
@@ -45,9 +44,9 @@ type Control interface {
 	Cancel(ctx context.Context, sessionID SessionID) error
 }
 
-// Queue lists child sessions in start order. The agent starts and cancels
+// Children lists child sessions in start order. The agent starts and cancels
 // them through tools. Hosts only read this list.
-type Queue interface {
+type Children interface {
 	Children(ctx context.Context, parent SessionID) ([]SessionID, error)
 	Jobs(ctx context.Context, parent SessionID) ([]SessionStatus, error)
 }

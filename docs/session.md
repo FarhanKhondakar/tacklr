@@ -1,6 +1,6 @@
-# Durable runtime
+# Session runtime
 
-Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frames to Runtime calls. ACP is the built-in in package `server/acp` (`acp.New`). Hosts implement `Protocol` for their own streaming and delivery. Runtime does not import protocol types. Autonomous workflows call Runtime directly.
+Tacklr’s session API is `session.Runtime`. A `server.Protocol` maps wire frames to Runtime calls. ACP is the built-in in package `server/acp` (`acp.New`). Hosts implement `Protocol` for their own streaming and delivery. Runtime does not import protocol types. Autonomous workflows call Runtime directly.
 
 ## Vocabulary
 
@@ -18,7 +18,7 @@ Tacklr’s session API is `durable.Runtime`. A `server.Protocol` maps wire frame
 | **Close** | Destroy the session, stop children, and delete its session messages |
 | **Turn locality** | Optional: keep a turn’s Temporal activities on one process (`Config.TurnLocality`) so VFS stays put |
 
-The host API is `durable.Runtime`, implemented by `temporal.New`. `TurnManager` is not a host type.
+The host API is `session.Runtime`, implemented by `temporal.New`. `TurnManager` is not a host type.
 
 Host tools on `AgentOptions.Tools` close over their clients when the host builds the agent. That closure is the client for every later turn. Rebuild the tool if the client must change. See [tools.md](tools.md).
 
@@ -31,10 +31,10 @@ cfg := tacklrtemporal.Config{
 	Secrets:   secrets,
 }
 rt := tacklrtemporal.New(c, cfg)
-id, _ := rt.CreateSession(ctx, durable.CreateSession{
+id, _ := rt.CreateSession(ctx, session.CreateSession{
 	State: map[string]any{"user": "Ada", "company": "Acme"},
 })
-_ = rt.Prompt(ctx, id, durable.Prompt{Text: prompt, Auth: auth})
+_ = rt.Prompt(ctx, id, session.Prompt{Text: prompt, Auth: auth})
 sub, _ := rt.Subscribe(ctx, id, 0)
 ```
 
@@ -61,7 +61,7 @@ A worker crash replays the workflow. Prompts that the turn has not absorbed yet 
 The host runs:
 
 1. A Tacklr Temporal worker (`NewWorker`) that registers `SessionWorkflow` and the turn activities. Do not register those yourself.
-2. A protocol process (optional) whose `durable.Runtime` is `temporal.New(client, cfg)`. `temporal.Config` is the single host config for both `New` and `NewWorker`. **Snapshots** and **Secrets** are required and must be the same instances on both. Autonomous work skips the protocol and calls Runtime.
+2. A protocol process (optional) whose `session.Runtime` is `temporal.New(client, cfg)`. `temporal.Config` is the single host config for both `New` and `NewWorker`. **Snapshots** and **Secrets** are required and must be the same instances on both. Autonomous work skips the protocol and calls Runtime.
 
 ```go
 c, err := tacklrtemporal.Dial(client.Options{HostPort: temporalHost})
@@ -79,7 +79,7 @@ rt := tacklrtemporal.New(c, cfg)
 | Tacklr concept | Temporal |
 |----------------|----------|
 | Agent session | One workflow (`SessionWorkflow`) |
-| Harness loop | `durable.Session` (`temporal` only runs steps, signals, and child workflows) |
+| Harness loop | `session.Session` (`temporal` only runs steps, signals, and child workflows) |
 | Inference / tool | Activities (`Inference`, `Tool`) |
 | Specialist | Child workflow |
 | Turn locality | `Config.TurnLocality` keeps the turn’s activities on one Temporal worker. Zero (default) does not pin them. |
@@ -125,7 +125,7 @@ Drain auto-collects terminal `block=false` jobs at the next safe window point: a
 
 The turn does not complete while jobs remain. The wait-loop blocks without parent park and without another parent model call. A finished job or a human `Prompt` wakes it through the inbox. Specialist child HITL is resumed on the **child** session.
 
-Child sessions are nested Runtime sessions (in-process or Temporal). A panic in an in-process child turn goroutine is not recovered and can leave the child `running`. Temporal starts an async child without waiting; a terminal async child is auto-collected as a job message.
+Child sessions are nested `session.Runtime` sessions. Temporal starts an async child without waiting. A terminal async child is collected as a job message.
 
 ## Tool batches
 
@@ -154,7 +154,7 @@ Resume.Auth            tokens for remount after park or worker recycle
 
 `AuthContext` is protocol-neutral. ACP `_tacklr/vfs/bind` only stashes on the ACP wire session; `BindTurn` copies that stash onto `Prompt.Auth`. An autonomous host sets `Prompt.Auth` (and optional `CreateSession.Mounts`) when it queues the workflow. No protocol is required.
 
-Recipes are cached on the session snapshot (`Snapshot.Mounts`): where a mount came from, not file contents. Providers lazy-load bytes on open/read. Tokens are not snapshotted and are not written to Temporal event history. The Temporal adapter puts them in `Config.Secrets` (`durable.SecretStorage`) before signaling a secret-free `AuthContext`. Activities load the bag at harness time (child sessions fall back to the parent id). Close deletes the session’s secrets.
+Recipes are cached on the session snapshot (`Snapshot.Mounts`): where a mount came from, not file contents. Providers lazy-load bytes on open/read. Tokens are not snapshotted and are not written to Temporal event history. The Temporal adapter puts them in `Config.Secrets` (`session.SecretStorage`) before signaling a secret-free `AuthContext`. Activities load the bag at harness time (child sessions fall back to the parent id). Close deletes the session’s secrets.
 
 `SecretStorage` is not `SnapshotStore`. Client and worker must share one instance (Redis, Postgres, Vault, or `MemorySecretStorage` when they share a process). There is no default: a private memory map per process looks like a successful Prompt and then remounts nothing.
 
@@ -218,7 +218,7 @@ Session messages live in the brain table `session_messages`, not in SnapshotStor
 | Auth | SecretStorage + secret-free signal | orchestration input / event | invocation payload |
 | Session record | SnapshotStore | Same | Same |
 
-Do not put Temporal `workflow.Context` on `durable.Runtime`.
+Do not put Temporal `workflow.Context` on `session.Runtime`.
 
 ## Observability
 

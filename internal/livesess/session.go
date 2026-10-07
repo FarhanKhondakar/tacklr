@@ -6,15 +6,15 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/internal/durtest"
 )
 
 // Session is a Temporal Docker session for tests (Prompt / Subscribe / Resume).
 type Session struct {
-	Runtime durable.Runtime
-	ID      durable.SessionID
-	sub     durable.Subscription
+	Runtime session.Runtime
+	ID      session.SessionID
+	sub     session.Subscription
 }
 
 // StartSession registers opts as the default catalog agent and creates a session.
@@ -23,11 +23,11 @@ func StartSession(t testing.TB, opts tacklr.AgentOptions) *Session {
 	if opts.MaxWindowSize == 0 {
 		opts.MaxWindowSize = 8192
 	}
-	sessionID := durable.SessionID(opts.SessionID)
+	sessionID := session.SessionID(opts.SessionID)
 	opts.SessionID = ""
 	opts.MountSession = nil
 	rt := Runtime(t, opts)
-	id, err := rt.CreateSession(t.Context(), durable.CreateSession{SessionID: sessionID})
+	id, err := rt.CreateSession(t.Context(), session.CreateSession{SessionID: sessionID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func StartSession(t testing.TB, opts tacklr.AgentOptions) *Session {
 
 func (s *Session) Prompt(t testing.TB, text string) []tacklr.StreamEvent {
 	t.Helper()
-	if err := s.Runtime.Prompt(t.Context(), s.ID, durable.Prompt{Text: text}); err != nil {
+	if err := s.Runtime.Prompt(t.Context(), s.ID, session.Prompt{Text: text}); err != nil {
 		t.Fatal(err)
 	}
 	return s.Wait(t)
@@ -52,7 +52,7 @@ func (s *Session) Prompt(t testing.TB, text string) []tacklr.StreamEvent {
 
 func (s *Session) PromptMessage(t testing.TB, msg *tacklr.Message) []tacklr.StreamEvent {
 	t.Helper()
-	if err := s.Runtime.Prompt(t.Context(), s.ID, durable.Prompt{UserMessage: msg}); err != nil {
+	if err := s.Runtime.Prompt(t.Context(), s.ID, session.Prompt{UserMessage: msg}); err != nil {
 		t.Fatal(err)
 	}
 	return s.Wait(t)
@@ -60,7 +60,7 @@ func (s *Session) PromptMessage(t testing.TB, msg *tacklr.Message) []tacklr.Stre
 
 func (s *Session) Resume(t testing.TB, responses map[string][]byte) []tacklr.StreamEvent {
 	t.Helper()
-	if err := s.Runtime.Resume(t.Context(), s.ID, durable.Resume{Responses: responses}); err != nil {
+	if err := s.Runtime.Resume(t.Context(), s.ID, session.Resume{Responses: responses}); err != nil {
 		t.Fatal(err)
 	}
 	return s.Wait(t)

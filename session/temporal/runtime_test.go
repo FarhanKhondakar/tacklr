@@ -22,11 +22,11 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/durtest"
 	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	"github.com/ryanaldo34/tacklr/mcp"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -39,13 +39,13 @@ func liveHostPort(t *testing.T) string {
 }
 
 type liveStack struct {
-	Runtime   durable.Runtime
-	Snapshots durable.SnapshotStore
+	Runtime   session.Runtime
+	Snapshots session.SnapshotStore
 	Agent     tacklr.AgentOptions
 	Client    client.Client
 	TaskQueue string
 	Worker    worker.Worker
-	Secrets   durable.SecretStorage
+	Secrets   session.SecretStorage
 }
 
 func newLiveStack(t *testing.T, agent tacklr.AgentOptions) *liveStack {
@@ -58,9 +58,9 @@ func newLiveStack(t *testing.T, agent tacklr.AgentOptions) *liveStack {
 	t.Cleanup(c.Close)
 	n := liveSeq.Add(1)
 	tq := fmt.Sprintf("tacklr-live-%d", n)
-	snaps := durable.NewMemorySnapshot()
-	log := durable.NewMemoryEventLog()
-	secrets := durable.NewMemorySecretStorage()
+	snaps := session.NewMemorySnapshot()
+	log := session.NewMemoryEventLog()
+	secrets := session.NewMemorySecretStorage()
 	cfg := Config{Agent: agent, TaskQueue: tq, Snapshots: snaps, Fallback: log, Projection: vfs.DirectProjection{}, Secrets: secrets}
 	rt := New(c, cfg)
 	w := NewWorker(c, cfg)
@@ -119,7 +119,7 @@ func liveAgent(t *testing.T, model tacklr.InferenceStrategy, extra tacklr.AgentO
 	return spec
 }
 
-func waitTurn(t *testing.T, rt durable.Runtime, id durable.SessionID, sub durable.Subscription, timeout time.Duration) []tacklr.StreamEvent {
+func waitTurn(t *testing.T, rt session.Runtime, id session.SessionID, sub session.Subscription, timeout time.Duration) []tacklr.StreamEvent {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
@@ -141,7 +141,7 @@ func waitTurn(t *testing.T, rt durable.Runtime, id durable.SessionID, sub durabl
 	}
 }
 
-func waitContains(t *testing.T, sub durable.Subscription, timeout time.Duration, want func(tacklr.StreamEvent) bool) []tacklr.StreamEvent {
+func waitContains(t *testing.T, sub session.Subscription, timeout time.Duration, want func(tacklr.StreamEvent) bool) []tacklr.StreamEvent {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
@@ -194,13 +194,13 @@ func TestLive_workerRestartWhileParkedThenResumeRemounts(t *testing.T) {
 		}
 	})
 	stack := newLiveStack(t, liveAgent(t, model, tacklr.AgentOptions{OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(dir)))}))
-	id, err := stack.Runtime.CreateSession(ctx, durable.CreateSession{})
+	id, err := stack.Runtime.CreateSession(ctx, session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stack.Runtime.Prompt(ctx, id, durable.Prompt{
+	if err := stack.Runtime.Prompt(ctx, id, session.Prompt{
 		Text: "park",
-		Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+		Auth: session.AuthContext{Bindings: []vfs.Binding{{
 			Provider: "local",
 			Params:   map[string]string{vfs.ParamName: "docs"},
 			Auth:     vfs.Credential{Token: "tok-1"},
@@ -225,9 +225,9 @@ func TestLive_workerRestartWhileParkedThenResumeRemounts(t *testing.T) {
 	}
 	stack.RestartWorker(t)
 	payload, _ := json.Marshal(map[string]any{"selectionIdx": 0})
-	if err := stack.Runtime.Resume(ctx, id, durable.Resume{
+	if err := stack.Runtime.Resume(ctx, id, session.Resume{
 		Responses: map[string][]byte{"ask1": payload},
-		Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+		Auth: session.AuthContext{Bindings: []vfs.Binding{{
 			Provider: "local",
 			Auth:     vfs.Credential{Token: "tok-2"},
 		}}},
@@ -260,8 +260,8 @@ func TestLive_cachedRecipePlusTokenOnlyPrompt(t *testing.T) {
 		}
 	})
 	stack := newLiveStack(t, liveAgent(t, model, tacklr.AgentOptions{OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(dir)))}))
-	id, err := stack.Runtime.CreateSession(ctx, durable.CreateSession{
-		Mounts: []durable.MountRecipe{{
+	id, err := stack.Runtime.CreateSession(ctx, session.CreateSession{
+		Mounts: []session.MountRecipe{{
 			Provider: "local",
 			Alias:    "docs",
 			Params:   map[string]string{vfs.ParamName: "docs"},
@@ -270,9 +270,9 @@ func TestLive_cachedRecipePlusTokenOnlyPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stack.Runtime.Prompt(ctx, id, durable.Prompt{
+	if err := stack.Runtime.Prompt(ctx, id, session.Prompt{
 		Text: "read",
-		Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+		Auth: session.AuthContext{Bindings: []vfs.Binding{{
 			Provider: "local",
 			Auth:     vfs.Credential{Token: "x"},
 		}}},
@@ -304,7 +304,7 @@ func TestLive_secretsNotInHistory(t *testing.T) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
 	})
 	stack := newLiveStack(t, liveAgent(t, model, tacklr.AgentOptions{}))
-	id, err := stack.Runtime.CreateSession(ctx, durable.CreateSession{
+	id, err := stack.Runtime.CreateSession(ctx, session.CreateSession{
 		MCPServers: []mcp.MCPConfig{{
 			Name: "remote", Type: mcp.TransportHTTP, URL: "https://example.test/mcp",
 			Headers:       []mcp.HTTPHeader{{Name: "Authorization", Value: header}},
@@ -314,9 +314,9 @@ func TestLive_secretsNotInHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stack.Runtime.Prompt(ctx, id, durable.Prompt{
+	if err := stack.Runtime.Prompt(ctx, id, session.Prompt{
 		Text: "hi",
-		Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+		Auth: session.AuthContext{Bindings: []vfs.Binding{{
 			Provider: "local",
 			Params:   map[string]string{vfs.ParamName: "docs"},
 			Auth:     vfs.Credential{Token: token},
@@ -347,14 +347,14 @@ func TestLive_secretsNotInHistory(t *testing.T) {
 func TestNew_panicsWithoutClientOrCatalog(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, nil), MaxWindowSize: 8192}
 	stub := &struct{ client.Client }{}
-	snaps := durable.NewMemorySnapshot()
-	secrets := durable.NewMemorySecretStorage()
+	snaps := session.NewMemorySnapshot()
+	secrets := session.NewMemorySecretStorage()
 	mustPanic(t, func() { New(nil, Config{Agent: agent, Snapshots: snaps, Secrets: secrets}) })
 	mustPanic(t, func() { New(stub, Config{}) })
 	mustPanic(t, func() { New(stub, Config{Agent: agent}) })
 	mustPanic(t, func() { New(stub, Config{Agent: agent, Snapshots: snaps}) })
 	mustPanic(t, func() { NewWorker(stub, Config{}) })
-	log := durable.NewMemoryEventLog()
+	log := session.NewMemoryEventLog()
 	rt := New(stub, Config{Agent: agent, Snapshots: snaps, Secrets: secrets, DisableStreams: true, TurnLocality: time.Minute, Fallback: log})
 	if rt.taskQueue != "tacklr" || !rt.disableStreams {
 		t.Fatalf("defaults tq=%q streams=%v", rt.taskQueue, rt.disableStreams)
@@ -376,26 +376,26 @@ func TestNew_panicsWithoutClientOrCatalog(t *testing.T) {
 	}
 	_ = sub.Close()
 	rt.markClosed("gone")
-	if err := rt.Prompt(ctx, "gone", durable.Prompt{Text: "x"}); !errors.Is(err, durable.ErrSessionNotFound) {
+	if err := rt.Prompt(ctx, "gone", session.Prompt{Text: "x"}); !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("closed session: %v", err)
 	}
-	if _, err := rt.Status(ctx, "gone"); !errors.Is(err, durable.ErrSessionNotFound) {
+	if _, err := rt.Status(ctx, "gone"); !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("closed status: %v", err)
 	}
-	if _, err := rt.Children(ctx, "gone"); !errors.Is(err, durable.ErrSessionNotFound) {
+	if _, err := rt.Children(ctx, "gone"); !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("closed children: %v", err)
 	}
 }
 
 type failPutSecrets struct{}
 
-func (failPutSecrets) Put(context.Context, durable.SessionID, durable.Secrets) error {
+func (failPutSecrets) Put(context.Context, session.SessionID, session.Secrets) error {
 	return errors.New("vault sealed")
 }
-func (failPutSecrets) Get(context.Context, durable.SessionID) (durable.Secrets, error) {
-	return durable.Secrets{}, nil
+func (failPutSecrets) Get(context.Context, session.SessionID) (session.Secrets, error) {
+	return session.Secrets{}, nil
 }
-func (failPutSecrets) Delete(context.Context, durable.SessionID) error { return nil }
+func (failPutSecrets) Delete(context.Context, session.SessionID) error { return nil }
 
 type nopWorkflowClient struct{ client.Client }
 
@@ -409,12 +409,12 @@ func (nopWorkflowClient) QueryWorkflow(context.Context, string, string, string, 
 func TestRuntime_promptFailsWhenVaultSealed(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, nil), MaxWindowSize: 8192}
 	rt := New(nopWorkflowClient{}, Config{
-		Agent: agent, Snapshots: durable.NewMemorySnapshot(), Secrets: failPutSecrets{}, DisableStreams: true,
-		Fallback: durable.NewMemoryEventLog(),
+		Agent: agent, Snapshots: session.NewMemorySnapshot(), Secrets: failPutSecrets{}, DisableStreams: true,
+		Fallback: session.NewMemoryEventLog(),
 	})
-	err := rt.Prompt(t.Context(), "s", durable.Prompt{
+	err := rt.Prompt(t.Context(), "s", session.Prompt{
 		Text: "x",
-		Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+		Auth: session.AuthContext{Bindings: []vfs.Binding{{
 			Provider: "gdrive", Auth: vfs.Credential{Token: "tok"},
 		}}},
 	})
@@ -425,15 +425,15 @@ func TestRuntime_promptFailsWhenVaultSealed(t *testing.T) {
 
 func TestRuntime_closeDeletesSecrets(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, nil), MaxWindowSize: 8192}
-	store := durable.NewMemorySecretStorage()
-	if err := store.Put(t.Context(), "s", durable.Secrets{Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+	store := session.NewMemorySecretStorage()
+	if err := store.Put(t.Context(), "s", session.Secrets{Auth: session.AuthContext{Bindings: []vfs.Binding{{
 		Provider: "gdrive", Auth: vfs.Credential{Token: "tok"},
 	}}}}); err != nil {
 		t.Fatal(err)
 	}
 	rt := New(nopWorkflowClient{}, Config{
-		Agent: agent, Snapshots: durable.NewMemorySnapshot(), Secrets: store, DisableStreams: true,
-		Fallback: durable.NewMemoryEventLog(),
+		Agent: agent, Snapshots: session.NewMemorySnapshot(), Secrets: store, DisableStreams: true,
+		Fallback: session.NewMemoryEventLog(),
 	})
 	if err := rt.Close(t.Context(), "s"); err != nil {
 		t.Fatal(err)
@@ -463,7 +463,7 @@ func lastMsg(msgs []*tacklr.Message) *tacklr.Message {
 	return nil
 }
 
-func drainLog(t *testing.T, log durable.EventLog, id durable.SessionID) []tacklr.StreamEvent {
+func drainLog(t *testing.T, log session.EventLog, id session.SessionID) []tacklr.StreamEvent {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
@@ -478,13 +478,13 @@ func drainLog(t *testing.T, log durable.EventLog, id durable.SessionID) []tacklr
 	return got
 }
 
-func querySession(t *testing.T, env *testsuite.TestWorkflowEnvironment) durable.SessionStatus {
+func querySession(t *testing.T, env *testsuite.TestWorkflowEnvironment) session.SessionStatus {
 	t.Helper()
 	val, err := env.QueryWorkflow(queryStatus)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var st durable.SessionStatus
+	var st session.SessionStatus
 	if err := val.Get(&st); err != nil {
 		t.Fatal(err)
 	}
@@ -492,24 +492,24 @@ func querySession(t *testing.T, env *testsuite.TestWorkflowEnvironment) durable.
 }
 
 type retryLog struct {
-	durable.EventLog
+	session.EventLog
 	retry []tacklr.StreamEvent
 }
 
-func (l *retryLog) Append(ctx context.Context, id durable.SessionID, topic string, ev tacklr.StreamEvent) error {
-	if topic == durable.TopicRetry {
+func (l *retryLog) Append(ctx context.Context, id session.SessionID, topic string, ev tacklr.StreamEvent) error {
+	if topic == session.TopicRetry {
 		l.retry = append(l.retry, ev)
 	}
 	return l.EventLog.Append(ctx, id, topic, ev)
 }
 
-func newActs(agent tacklr.AgentOptions, log durable.EventLog, disableStreams bool) *activities {
+func newActs(agent tacklr.AgentOptions, log session.EventLog, disableStreams bool) *activities {
 	return &activities{
 		Agent:          agent,
-		Snapshots:      durable.NewMemorySnapshot(),
+		Snapshots:      session.NewMemorySnapshot(),
 		Projection:     vfs.DirectProjection{},
 		Fallback:       log,
 		DisableStreams: disableStreams,
-		Secrets:        durable.NewMemorySecretStorage(),
+		Secrets:        session.NewMemorySecretStorage(),
 	}
 }

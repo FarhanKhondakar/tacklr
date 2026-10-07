@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // OverlaySpecialist copies the parent catalog spec and applies the named Specialist.
@@ -22,11 +22,11 @@ func OverlaySpecialist(parent tacklr.AgentOptions, specialist string) (tacklr.Ag
 }
 
 // ChildState is the tool-facing running/completed/failed for a session.
-func ChildState(st durable.SessionState) string {
+func ChildState(st session.SessionState) string {
 	switch st {
-	case durable.SessionComplete:
+	case session.SessionComplete:
 		return tacklr.JobCompleted
-	case durable.SessionFailed:
+	case session.SessionFailed:
 		return tacklr.JobFailed
 	default:
 		return tacklr.JobRunning
@@ -69,9 +69,9 @@ func JobSteer(id, name, body string, failed bool) *tacklr.Message {
 }
 
 // ChildJobMessage is JobSteer for a nested session job.
-func ChildJobMessage(st durable.SessionStatus) *tacklr.Message {
+func ChildJobMessage(st session.SessionStatus) *tacklr.Message {
 	body := st.Result
-	failed := st.State == durable.SessionFailed
+	failed := st.State == session.SessionFailed
 	if failed && body == "" && st.Err != nil {
 		body = st.Err.Error()
 	}

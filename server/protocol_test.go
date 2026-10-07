@@ -21,8 +21,8 @@ import (
 	"github.com/ryanaldo34/tacklr/telemetry"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // healthProtocol is a host server.Protocol with one HTTP route (no Runtime turns).
@@ -162,7 +162,7 @@ func TestRunTurn_midPromptCancelThenNextPrompt(t *testing.T) {
 	})
 	k := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	ctx := t.Context()
-	id, err := k.Runtime.CreateSession(ctx, durable.CreateSession{})
+	id, err := k.Runtime.CreateSession(ctx, session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestRunTurn_midPromptCancelThenNextPrompt(t *testing.T) {
 				sawStream.Store(true)
 			}
 			return terminalControl(ev)
-		}}, string(id), nil, server.PromptOrResume{Prompt: durable.Prompt{Text: "hi"}})
+		}}, string(id), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}})
 	}()
 
 	select {
@@ -208,7 +208,7 @@ func TestRunTurn_midPromptCancelThenNextPrompt(t *testing.T) {
 	if err := server.RunTurn(ctx, env, pumpProto{onEvent: func(ev tacklr.StreamEvent) server.StreamControl {
 		second = append(second, ev)
 		return terminalControl(ev)
-	}}, string(id), nil, server.PromptOrResume{Prompt: durable.Prompt{Text: "again"}}); err != nil {
+	}}, string(id), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "again"}}); err != nil {
 		t.Fatalf("second turn: %v", err)
 	}
 	var sawAfter, complete bool
@@ -230,31 +230,31 @@ func TestRunTurn_runtimeErrors(t *testing.T) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "x", IsComplete: true}
 	}), tacklr.AgentOptions{})
 	env := server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent}
-	if err := server.RunTurn(t.Context(), env, pumpProto{}, "missing", nil, server.PromptOrResume{Prompt: durable.Prompt{Text: "hi"}}); err == nil {
+	if err := server.RunTurn(t.Context(), env, pumpProto{}, "missing", nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}}); err == nil {
 		t.Fatal("want subscribe missing session")
 	}
-	id, err := k.Runtime.CreateSession(t.Context(), durable.CreateSession{})
+	id, err := k.Runtime.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.RunTurn(t.Context(), env, pumpProto{}, string(id), nil, server.PromptOrResume{
-		Prompt: durable.Prompt{Text: "hi", State: map[string]any{"ch": make(chan int)}},
+		Prompt: session.Prompt{Text: "hi", State: map[string]any{"ch": make(chan int)}},
 	}); err == nil {
 		t.Fatal("want prompt encode failure")
 	}
 	if err := server.RunTurn(t.Context(), env, pumpProto{}, string(id), nil, server.PromptOrResume{
-		Resume: &durable.Resume{State: map[string]any{"ch": make(chan int)}},
+		Resume: &session.Resume{State: map[string]any{"ch": make(chan int)}},
 	}); err == nil {
 		t.Fatal("want resume encode failure")
 	}
-	id2, err := k.Runtime.CreateSession(t.Context(), durable.CreateSession{})
+	id2, err := k.Runtime.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.RunTurn(t.Context(), env, pumpProto{onEvent: func(tacklr.StreamEvent) server.StreamControl {
 		_ = k.Runtime.Close(t.Context(), id2)
 		return server.StreamControl{Resume: map[string][]byte{"nope": []byte(`{}`)}}
-	}}, string(id2), nil, server.PromptOrResume{Prompt: durable.Prompt{Text: "hi"}}); err == nil {
+	}}, string(id2), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}}); err == nil {
 		t.Fatal("want resume-after-close failure")
 	}
 }
@@ -263,13 +263,13 @@ func TestRunTurn_protocolErrorStopsTurn(t *testing.T) {
 	k := newTestRuntime(t, testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "x", IsComplete: true}
 	}), tacklr.AgentOptions{})
-	id, err := k.Runtime.CreateSession(t.Context(), durable.CreateSession{})
+	id, err := k.Runtime.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = server.RunTurn(t.Context(), server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent}, pumpProto{onEvent: func(tacklr.StreamEvent) server.StreamControl {
 		return server.StreamControl{Err: errors.New("encode")}
-	}}, string(id), nil, server.PromptOrResume{Prompt: durable.Prompt{Text: "hi"}})
+	}}, string(id), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}})
 	if err == nil {
 		t.Fatal("want protocol error")
 	}
@@ -307,34 +307,34 @@ func TestMain(m *testing.M) {
 
 // fakeRuntime is a test fixture. It does not run a turn.
 type fakeRuntime struct {
-	create func(context.Context, durable.CreateSession) (durable.SessionID, error)
+	create func(context.Context, session.CreateSession) (session.SessionID, error)
 }
 
-func (f fakeRuntime) CreateSession(ctx context.Context, req durable.CreateSession) (durable.SessionID, error) {
+func (f fakeRuntime) CreateSession(ctx context.Context, req session.CreateSession) (session.SessionID, error) {
 	if f.create != nil {
 		return f.create(ctx, req)
 	}
 	return "sess", nil
 }
 
-func (fakeRuntime) Prompt(context.Context, durable.SessionID, durable.Prompt) error { return nil }
-func (fakeRuntime) Resume(context.Context, durable.SessionID, durable.Resume) error { return nil }
-func (fakeRuntime) Cancel(context.Context, durable.SessionID) error                 { return nil }
-func (fakeRuntime) Close(context.Context, durable.SessionID) error                  { return nil }
-func (fakeRuntime) Head(context.Context, durable.SessionID) (durable.Seq, error)    { return 0, nil }
-func (fakeRuntime) Subscribe(context.Context, durable.SessionID, durable.Seq) (durable.Subscription, error) {
+func (fakeRuntime) Prompt(context.Context, session.SessionID, session.Prompt) error { return nil }
+func (fakeRuntime) Resume(context.Context, session.SessionID, session.Resume) error { return nil }
+func (fakeRuntime) Cancel(context.Context, session.SessionID) error                 { return nil }
+func (fakeRuntime) Close(context.Context, session.SessionID) error                  { return nil }
+func (fakeRuntime) Head(context.Context, session.SessionID) (session.Seq, error)    { return 0, nil }
+func (fakeRuntime) Subscribe(context.Context, session.SessionID, session.Seq) (session.Subscription, error) {
 	ch := make(chan tacklr.StreamEvent)
 	close(ch)
 	return closedSub{ch}, nil
 }
-func (fakeRuntime) Children(context.Context, durable.SessionID) ([]durable.SessionID, error) {
+func (fakeRuntime) Children(context.Context, session.SessionID) ([]session.SessionID, error) {
 	return nil, nil
 }
-func (fakeRuntime) Jobs(context.Context, durable.SessionID) ([]durable.SessionStatus, error) {
+func (fakeRuntime) Jobs(context.Context, session.SessionID) ([]session.SessionStatus, error) {
 	return nil, nil
 }
-func (fakeRuntime) Status(context.Context, durable.SessionID) (durable.SessionStatus, error) {
-	return durable.SessionStatus{}, durable.ErrSessionNotFound
+func (fakeRuntime) Status(context.Context, session.SessionID) (session.SessionStatus, error) {
+	return session.SessionStatus{}, session.ErrSessionNotFound
 }
 
 type closedSub struct{ ch chan tacklr.StreamEvent }
@@ -343,7 +343,7 @@ func (s closedSub) Events() <-chan tacklr.StreamEvent { return s.ch }
 func (closedSub) Close() error                        { return nil }
 
 type testRuntime struct {
-	Runtime durable.Runtime
+	Runtime session.Runtime
 	Agent   tacklr.AgentOptions
 }
 

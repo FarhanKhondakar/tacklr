@@ -12,7 +12,7 @@ Context is built for the work in front of the agent, not for everything that has
 
 ### Cloud-native
 
-Tacklr is meant to run in the cloud: Go, JSON-RPC protocols, optional Temporal for durable sessions. The same harness should embed in-process or sit behind `durable.Runtime`.
+Tacklr is meant to run in the cloud: Go, JSON-RPC protocols, and Temporal so a session outlives one process. Hosts sit behind `session.Runtime`.
 
 ### A bounded agent world
 

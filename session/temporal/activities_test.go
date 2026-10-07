@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -16,11 +16,11 @@ func TestActivities_directCallPersistsUserState(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
 	}), MaxWindowSize: 8192}
-	snaps := durable.NewMemorySnapshot()
-	log := durable.NewMemoryEventLog()
-	acts := &activities{Agent: agent, Snapshots: snaps, Fallback: log, DisableStreams: true, Secrets: durable.NewMemorySecretStorage()}
-	out, err := acts.Inference(t.Context(), durable.InferenceInput{
-		SessionID: "s", Rec: durable.Snapshot{},
+	snaps := session.NewMemorySnapshot()
+	log := session.NewMemoryEventLog()
+	acts := &activities{Agent: agent, Snapshots: snaps, Fallback: log, DisableStreams: true, Secrets: session.NewMemorySecretStorage()}
+	out, err := acts.Inference(t.Context(), session.InferenceInput{
+		SessionID: "s", Rec: session.Snapshot{},
 		User:  &tacklr.Message{Role: tacklr.RoleUser, Content: "hi"},
 		State: map[string]any{"user": "Ryan"},
 	})
@@ -53,22 +53,22 @@ func TestActivities_childTurnUsesParentSecrets(t *testing.T) {
 			}
 			return open(ctx, sessionID, req)
 		}}
-	store := durable.NewMemorySecretStorage()
-	parentAuth := durable.AuthContext{Bindings: []vfs.Binding{{
+	store := session.NewMemorySecretStorage()
+	parentAuth := session.AuthContext{Bindings: []vfs.Binding{{
 		Provider: "local",
 		Params:   map[string]string{vfs.ParamName: "docs"},
 		Auth:     vfs.Credential{Token: "parent-tok"},
 	}}}
-	if err := store.Put(t.Context(), "parent", durable.Secrets{Auth: parentAuth}); err != nil {
+	if err := store.Put(t.Context(), "parent", session.Secrets{Auth: parentAuth}); err != nil {
 		t.Fatal(err)
 	}
-	acts := newActs(agent, durable.NewMemoryEventLog(), true)
+	acts := newActs(agent, session.NewMemoryEventLog(), true)
 	acts.Secrets = store
-	if _, err := acts.Inference(t.Context(), durable.InferenceInput{
+	if _, err := acts.Inference(t.Context(), session.InferenceInput{
 		SessionID: "child",
-		Rec: durable.Snapshot{
+		Rec: session.Snapshot{
 			Parent: "parent",
-			Mounts: durable.ApplyAuth(nil, parentAuth),
+			Mounts: session.ApplyAuth(nil, parentAuth),
 		},
 		User: &tacklr.Message{Role: tacklr.RoleUser, Content: "hi"},
 	}); err != nil {

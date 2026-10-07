@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/mcp"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -33,14 +33,14 @@ func ConstructTurn(ctx context.Context, agent tacklr.AgentOptions, threadID stri
 }
 
 // RestoreTurn reloads a snapshot (if any) and applies host session state.
-func RestoreTurn(ctx context.Context, store durable.SnapshotStore, id durable.SessionID, h *tacklr.TurnManager, state map[string]any) (durable.Revision, error) {
+func RestoreTurn(ctx context.Context, store session.SnapshotStore, id session.SessionID, h *tacklr.TurnManager, state map[string]any) (session.Revision, error) {
 	snap, rev, err := store.Load(ctx, id)
 	switch {
 	case err == nil:
 		if err := h.RestoreCheckpoint(snap.Checkpoint); err != nil {
 			return "", err
 		}
-	case errors.Is(err, durable.ErrSessionNotFound):
+	case errors.Is(err, session.ErrSessionNotFound):
 		rev = ""
 	default:
 		return "", err

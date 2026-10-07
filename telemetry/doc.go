@@ -9,6 +9,6 @@
 //   - DefaultResource — service resource
 //
 // Span starters, Instruments.Record*, attribute constants, and EmitEvent are
-// for the harness and durable packages. Hosts must not start tacklr spans or
+// for the harness and the session package. Hosts must not start tacklr spans or
 // record harness metrics; that can break traces and double-count metrics.
 package telemetry

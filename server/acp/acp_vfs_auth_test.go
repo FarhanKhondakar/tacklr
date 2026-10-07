@@ -22,22 +22,22 @@ func TestACP_vfsBindRefreshUnbind(t *testing.T) {
 		t.Fatal(err)
 	}
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			if n := len(msgs); n > 0 {
-				last := msgs[n-1]
-				if last != nil && last.Role == tacklr.RoleTool {
-					ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: last.Content, IsComplete: true}
-					return
-				}
+		if n := len(msgs); n > 0 {
+			last := msgs[n-1]
+			if last != nil && last.Role == tacklr.RoleTool {
+				ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: last.Content, IsComplete: true}
+				return
 			}
-			ch <- tacklr.LLMResponseChunk{
-				Type: tacklr.StreamEventFunctionCall,
-				ToolCalls: []tacklr.ToolCall{{
-					ID: "read-1", CallID: "read-1", Name: "read",
-					Arguments: `{"path":"/workspace/docs/hello.txt"}`,
-				}},
-				IsComplete: true,
-			}
-		})
+		}
+		ch <- tacklr.LLMResponseChunk{
+			Type: tacklr.StreamEventFunctionCall,
+			ToolCalls: []tacklr.ToolCall{{
+				ID: "read-1", CallID: "read-1", Name: "read",
+				Arguments: `{"path":"/workspace/docs/hello.txt"}`,
+			}},
+			IsComplete: true,
+		}
+	})
 	r := newTestRuntime(t, strategy, tacklr.AgentOptions{OpenVFS: func(ctx context.Context, sid string, req vfs.Request) (*vfs.MountSession, error) {
 		if _, ok := vfs.BindingByName(req.Bindings, "docs"); !ok {
 			if _, ok := vfs.BindingByName(req.Bindings, "local"); !ok {

@@ -8,9 +8,9 @@ import (
 
 	"github.com/ryanaldo34/tacklr"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/interrupt"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // Ask is how the active protocol reaches the program on the other end of the
@@ -42,7 +42,7 @@ func (c *Conn) EstablishSecurity(securityContext tacklrsecurity.Context) {
 
 // ProtocolEnv is the domain + connection context passed into protocol handlers.
 type ProtocolEnv struct {
-	Runtime durable.Runtime
+	Runtime session.Runtime
 	Agent   tacklr.AgentOptions
 	Conn    *Conn
 	// Security is protocol-neutral. Implementations map wire credentials into
@@ -69,11 +69,11 @@ type HTTPRoute struct {
 	Handler              func(env ProtocolEnv, w http.ResponseWriter, r *http.Request)
 }
 
-// Protocol is the host extension point for streaming and delivery over durable.Runtime.
+// Protocol is the host extension point for streaming and delivery over session.Runtime.
 //
 // The ACP built-in is package server/acp. Hosts implement Protocol to
 // define their own wire: HTTP/WebSocket routes, frame encoding, and HITL resume.
-// The kernel does not import protocol types. Map wire auth into durable.AuthContext
+// The kernel does not import protocol types. Map wire auth into session.AuthContext
 // on Prompt/Resume; call RunTurn to pump Runtime.Subscribe through OnStreamEvent.
 type Protocol interface {
 	// HandleInbound decodes one connection-oriented body (WebSocket).
@@ -94,7 +94,7 @@ func RunTurn(
 	reqID json.RawMessage,
 	prompt PromptOrResume,
 ) error {
-	id := durable.SessionID(threadID)
+	id := session.SessionID(threadID)
 	after := prompt.After
 	if seq, err := env.Runtime.Head(ctx, id); err == nil {
 		after = seq
@@ -160,7 +160,7 @@ func RunTurn(
 				return ctrl.Err
 			}
 			if len(ctrl.Resume) > 0 {
-				if err := env.Runtime.Resume(ctx, id, durable.Resume{
+				if err := env.Runtime.Resume(ctx, id, session.Resume{
 					Responses: ctrl.Resume,
 					Auth:      prompt.Prompt.Auth,
 				}); err != nil {
@@ -177,9 +177,9 @@ func RunTurn(
 
 // PromptOrResume is one protocol turn against Runtime.
 type PromptOrResume struct {
-	Prompt durable.Prompt
-	Resume *durable.Resume
-	After  durable.Seq
+	Prompt session.Prompt
+	Resume *session.Resume
+	After  session.Seq
 }
 
 // MessageWriter is the sink a Protocol uses for results and streamed frames.

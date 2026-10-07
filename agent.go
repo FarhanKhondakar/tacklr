@@ -24,7 +24,7 @@ import (
 )
 
 // TurnManager runs one turn slice: infer, tool batch, checkpoint.
-// Durable runtimes construct it; hosts use durable.Runtime.
+// Durable runtimes construct it; hosts use session.Runtime.
 type TurnManager struct {
 	model                 InferenceStrategy
 	sessionId             string
@@ -532,7 +532,7 @@ func (a *TurnManager) initMCP(ctx context.Context) {
 
 // Close dumps session state then releases turn resources (MCP, owned vfsindex).
 // Shared worker bridges are not closed. MountSession is closed by the turn
-// owner (durable.Runtime activity preamble), not here — workers inherit the same tree.
+// owner (session.Runtime activity preamble), not here — workers inherit the same tree.
 // Call after the Run events channel is drained, or when construct/runHarness fails.
 func (a *TurnManager) Close() {
 	if a.mcpCleanup != nil {

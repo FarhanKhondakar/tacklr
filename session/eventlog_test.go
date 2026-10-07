@@ -1,4 +1,4 @@
-package durable
+package session
 
 import (
 	"testing"

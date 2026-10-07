@@ -13,9 +13,9 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
-	adapter "github.com/ryanaldo34/tacklr/durable/internal"
 	"github.com/ryanaldo34/tacklr/mcp"
+	"github.com/ryanaldo34/tacklr/session"
+	adapter "github.com/ryanaldo34/tacklr/session/internal"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -23,14 +23,14 @@ import (
 // liveTurns lets a same-process Runtime.Cancel stop the activity body without
 // waiting for a Temporal heartbeat round-trip. Cross-process workers still
 // cancel via activity context + heartbeats.
-var liveTurns sync.Map // durable.SessionID -> context.CancelFunc
+var liveTurns sync.Map // session.SessionID -> context.CancelFunc
 
-func bindLiveTurn(id durable.SessionID, cancel context.CancelFunc) func() {
+func bindLiveTurn(id session.SessionID, cancel context.CancelFunc) func() {
 	liveTurns.Store(id, cancel)
 	return func() { liveTurns.Delete(id) }
 }
 
-func cancelLiveTurn(id durable.SessionID) {
+func cancelLiveTurn(id session.SessionID) {
 	if v, ok := liveTurns.LoadAndDelete(id); ok {
 		if cancel, ok := v.(context.CancelFunc); ok {
 			cancel()
@@ -52,7 +52,7 @@ func activityError(ctx context.Context, err error) error {
 		}
 		return temporal.NewCanceledError(err.Error())
 	}
-	if errors.Is(err, tacklr.ErrNetwork) || errors.Is(err, tacklr.ErrModelRefused) || errors.Is(err, durable.ErrStaleCheckpoint) {
+	if errors.Is(err, tacklr.ErrNetwork) || errors.Is(err, tacklr.ErrModelRefused) || errors.Is(err, session.ErrStaleCheckpoint) {
 		return err
 	}
 	return temporal.NewNonRetryableApplicationError(err.Error(), "", err)
@@ -61,12 +61,12 @@ func activityError(ctx context.Context, err error) error {
 // activities are the Inference and Tool bodies registered on the worker.
 type activities struct {
 	Agent          tacklr.AgentOptions
-	Snapshots      durable.SnapshotStore
+	Snapshots      session.SnapshotStore
 	Projection     vfs.Projection
-	Fallback       durable.EventLog
+	Fallback       session.EventLog
 	DisableStreams bool
-	Secrets        durable.SecretStorage
-	Jobs           map[string]durable.JobHandler
+	Secrets        session.SecretStorage
+	Jobs           map[string]session.JobHandler
 }
 
 type runJobInput struct {
@@ -74,7 +74,7 @@ type runJobInput struct {
 	Task string
 }
 
-func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (durable.InferenceOutput, error) {
+func (a *activities) Inference(ctx context.Context, in session.InferenceInput) (session.InferenceOutput, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer bindLiveTurn(in.SessionID, cancel)()
@@ -96,7 +96,7 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
 	if attempt > 1 {
-		_ = a.publish(ctx, stream, in.SessionID, durable.TopicRetry, tacklr.StreamEvent{Type: tacklr.StreamEventError, Content: "retry"}, true)
+		_ = a.publish(ctx, stream, in.SessionID, session.TopicRetry, tacklr.StreamEvent{Type: tacklr.StreamEventError, Content: "retry"}, true)
 	}
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
@@ -105,7 +105,7 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 			pub = err
 		}
 		slog.ErrorContext(ctx, "inference harness", "area", telemetry.AreaRuntime, "error", pub)
-		return durable.InferenceOutput{}, activityError(ctx, err)
+		return session.InferenceOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -116,11 +116,11 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 	defer stop()
 	if len(in.Resume) > 0 {
 		if err := eng.ApplyResume(in.Resume); err != nil {
-			return durable.InferenceOutput{}, activityError(ctx, err)
+			return session.InferenceOutput{}, activityError(ctx, err)
 		}
 		if pending := eng.PendingToolCalls(); len(pending) > 0 {
 			_, err = a.save(ctx, in.SessionID, h, rev, in.Rec)
-			return durable.InferenceOutput{ToolCalls: pending}, activityError(ctx, err)
+			return session.InferenceOutput{ToolCalls: pending}, activityError(ctx, err)
 		}
 	}
 	extra := in.Extra
@@ -129,7 +129,7 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 	}
 	if _, err := adapter.AbsorbAll(ctx, eng.AbsorbUser, extra, out); err != nil {
 		slog.ErrorContext(ctx, "inference absorb", "area", telemetry.AreaRuntime, "error", err)
-		return durable.InferenceOutput{}, activityError(ctx, err)
+		return session.InferenceOutput{}, activityError(ctx, err)
 	}
 	st := &tacklr.TurnState{HadToolRound: in.HadToolRound, ModelRequests: in.ModelRequests}
 	step, err := eng.RunInference(ctx, st, out)
@@ -139,11 +139,11 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 		} else {
 			slog.ErrorContext(ctx, "inference failed", "area", telemetry.AreaRuntime, "error", err)
 		}
-		return durable.InferenceOutput{}, activityError(ctx, err)
+		return session.InferenceOutput{}, activityError(ctx, err)
 	}
 	if _, err = a.save(ctx, in.SessionID, h, rev, in.Rec); err != nil {
 		slog.ErrorContext(ctx, "inference persist", "area", telemetry.AreaRuntime, "error", err)
-		return durable.InferenceOutput{}, activityError(ctx, err)
+		return session.InferenceOutput{}, activityError(ctx, err)
 	}
 	result := ""
 	if step.Complete {
@@ -157,10 +157,10 @@ func (a *activities) Inference(ctx context.Context, in durable.InferenceInput) (
 	}
 	slog.InfoContext(ctx, "inference completed",
 		"area", telemetry.AreaRuntime, "complete", step.Complete, "tool_calls", len(step.ToolCalls))
-	return durable.InferenceOutput{Complete: step.Complete, ToolCalls: step.ToolCalls, Result: result}, nil
+	return session.InferenceOutput{Complete: step.Complete, ToolCalls: step.ToolCalls, Result: result}, nil
 }
 
-func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.ToolOutput, error) {
+func (a *activities) Tool(ctx context.Context, in session.ToolInput) (session.ToolOutput, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer bindLiveTurn(in.SessionID, cancel)()
@@ -182,12 +182,12 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
 	if attempt > 1 {
-		_ = a.publish(ctx, stream, in.SessionID, durable.TopicRetry, tacklr.StreamEvent{Type: tacklr.StreamEventError, Content: "retry"}, true)
+		_ = a.publish(ctx, stream, in.SessionID, session.TopicRetry, tacklr.StreamEvent{Type: tacklr.StreamEventError, Content: "retry"}, true)
 	}
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
 		slog.ErrorContext(ctx, "tool harness", "area", telemetry.AreaHarness, "error", err)
-		return durable.ToolOutput{}, activityError(ctx, err)
+		return session.ToolOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -197,7 +197,7 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 		parent: in.SessionID,
 		agent:  a.Agent,
 		jobs:   a.Jobs,
-		known:  append([]durable.SessionID(nil), in.Rec.Children...),
+		known:  append([]session.SessionID(nil), in.Rec.Children...),
 	}
 	h.BindJobHost(kids)
 	eng := h.Drive()
@@ -207,7 +207,7 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 	if runErr != nil {
 		if err := ctx.Err(); err != nil {
 			slog.WarnContext(ctx, "tool cancelled", "area", telemetry.AreaHarness, "tool", in.Call.Name)
-			return durable.ToolOutput{}, activityError(ctx, runErr)
+			return session.ToolOutput{}, activityError(ctx, runErr)
 		}
 		slog.ErrorContext(ctx, "tool failed", "area", telemetry.AreaHarness, "tool", in.Call.Name, "error", runErr)
 	}
@@ -217,7 +217,7 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 		if runErr != nil {
 			saveErr = fmt.Errorf("tool: %w: persist: %w", runErr, saveErr)
 		}
-		return durable.ToolOutput{}, activityError(ctx, saveErr)
+		return session.ToolOutput{}, activityError(ctx, saveErr)
 	}
 	status := "success"
 	if step.Interrupted {
@@ -227,9 +227,9 @@ func (a *activities) Tool(ctx context.Context, in durable.ToolInput) (durable.To
 		"area", telemetry.AreaHarness, "tool", in.Call.Name, "status", status)
 	await := kids.awaitID
 	if await == "" && step.AwaitJobID != "" {
-		await = durable.SessionID(step.AwaitJobID)
+		await = session.SessionID(step.AwaitJobID)
 	}
-	return durable.ToolOutput{
+	return session.ToolOutput{
 		Interrupted:   step.Interrupted,
 		InterruptID:   step.InterruptID,
 		InterruptData: step.InterruptData,
@@ -254,10 +254,10 @@ func (a *activities) RunJob(ctx context.Context, in runJobInput) (string, error)
 	return out, activityError(ctx, err)
 }
 
-func (a *activities) CommitToolOutput(ctx context.Context, in durable.CommitInput) (durable.ToolOutput, error) {
+func (a *activities) CommitToolOutput(ctx context.Context, in session.CommitInput) (session.ToolOutput, error) {
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
-		return durable.ToolOutput{}, activityError(ctx, err)
+		return session.ToolOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -265,22 +265,22 @@ func (a *activities) CommitToolOutput(ctx context.Context, in durable.CommitInpu
 	}()
 	h.Drive().RecordToolResult(in.Call, in.Output)
 	if _, err = a.save(ctx, in.SessionID, h, rev, in.Rec); err != nil {
-		return durable.ToolOutput{}, activityError(ctx, err)
+		return session.ToolOutput{}, activityError(ctx, err)
 	}
 	presented := in.Call
 	presented.Status = "success"
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
-	_ = a.publish(ctx, stream, in.SessionID, durable.TopicEvents, tacklr.StreamEvent{
+	_ = a.publish(ctx, stream, in.SessionID, session.TopicEvents, tacklr.StreamEvent{
 		Type:      tacklr.StreamEventToolResult,
 		MessageID: in.Call.Key(),
 		Content:   in.Output,
 		ToolCalls: []tacklr.ToolCall{presented},
 	}, true)
-	return durable.ToolOutput{}, nil
+	return session.ToolOutput{}, nil
 }
 
-func (a *activities) harness(ctx context.Context, id durable.SessionID, rec durable.Snapshot, extraMCP []mcp.MCPConfig, state map[string]any) (*tacklr.TurnManager, *vfs.MountSession, *vfs.MountSession, durable.Revision, error) {
+func (a *activities) harness(ctx context.Context, id session.SessionID, rec session.Snapshot, extraMCP []mcp.MCPConfig, state map[string]any) (*tacklr.TurnManager, *vfs.MountSession, *vfs.MountSession, session.Revision, error) {
 	sec, err := a.Secrets.Get(ctx, id)
 	if err != nil {
 		return nil, nil, nil, "", err
@@ -303,7 +303,7 @@ func (a *activities) harness(ctx context.Context, id durable.SessionID, rec dura
 	if proj == nil {
 		proj = vfs.DirectProjection{}
 	}
-	h, ms, skillsMS, err := adapter.ConstructTurn(ctx, spec, string(id), durable.BindingsForTurn(rec.Mounts, sec.Auth), proj, extraMCP)
+	h, ms, skillsMS, err := adapter.ConstructTurn(ctx, spec, string(id), session.BindingsForTurn(rec.Mounts, sec.Auth), proj, extraMCP)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
@@ -315,7 +315,7 @@ func (a *activities) harness(ctx context.Context, id durable.SessionID, rec dura
 	return h, ms, skillsMS, rev, nil
 }
 
-func (a *activities) save(ctx context.Context, id durable.SessionID, h *tacklr.TurnManager, expected durable.Revision, rec durable.Snapshot) (durable.Revision, error) {
+func (a *activities) save(ctx context.Context, id session.SessionID, h *tacklr.TurnManager, expected session.Revision, rec session.Snapshot) (session.Revision, error) {
 	cp, err := h.Checkpoint()
 	if err != nil {
 		telemetry.RecordCheckpointAttempt(ctx, err)
@@ -348,7 +348,7 @@ func closeStream(ctx context.Context, c *workflowstreams.Client) {
 	}
 }
 
-func (a *activities) emitter(ctx context.Context, stream *workflowstreams.Client, sessionID durable.SessionID) func(tacklr.StreamEvent) {
+func (a *activities) emitter(ctx context.Context, stream *workflowstreams.Client, sessionID session.SessionID) func(tacklr.StreamEvent) {
 	first := true
 	return func(ev tacklr.StreamEvent) {
 		switch ev.Type {
@@ -361,13 +361,13 @@ func (a *activities) emitter(ctx context.Context, stream *workflowstreams.Client
 		}
 		force := first
 		first = false
-		_ = a.publish(ctx, stream, sessionID, durable.TopicEvents, ev, force)
+		_ = a.publish(ctx, stream, sessionID, session.TopicEvents, ev, force)
 	}
 }
 
 // emitEventInput is the typed EmitEvent activity argument.
 type emitEventInput struct {
-	SessionID durable.SessionID
+	SessionID session.SessionID
 	Event     tacklr.StreamEvent
 }
 
@@ -376,7 +376,7 @@ type emitEventInput struct {
 func (a *activities) EmitEvent(ctx context.Context, in emitEventInput) error {
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
-	return activityError(ctx, a.publish(ctx, stream, in.SessionID, durable.TopicEvents, in.Event, true))
+	return activityError(ctx, a.publish(ctx, stream, in.SessionID, session.TopicEvents, in.Event, true))
 }
 
 func startHeartbeat(ctx context.Context) func() {
@@ -416,7 +416,7 @@ func publishContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
-func (a *activities) publish(ctx context.Context, stream *workflowstreams.Client, sessionID durable.SessionID, topic string, ev tacklr.StreamEvent, force bool) error {
+func (a *activities) publish(ctx context.Context, stream *workflowstreams.Client, sessionID session.SessionID, topic string, ev tacklr.StreamEvent, force bool) error {
 	if ev.Error != nil && ev.Fail == "" {
 		ev.Fail = ev.Error.Error()
 	}

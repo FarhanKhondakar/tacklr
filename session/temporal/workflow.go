@@ -11,13 +11,13 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
-	adapter "github.com/ryanaldo34/tacklr/durable/internal"
+	"github.com/ryanaldo34/tacklr/session"
+	adapter "github.com/ryanaldo34/tacklr/session/internal"
 	"github.com/ryanaldo34/tacklr/telemetry"
 )
 
 // SessionWorkflow is the Temporal type name for the session wait loop.
-// NewWorker registers it. Hosts call durable.Runtime, not this function.
+// NewWorker registers it. Hosts call session.Runtime, not this function.
 func SessionWorkflow(ctx workflow.Context, in workflowInput) (string, error) {
 	logger := workflow.GetLogger(ctx)
 	if _, err := workflowstreams.NewWorkflowStream(ctx, nil); err != nil {
@@ -31,14 +31,14 @@ func SessionWorkflow(ctx workflow.Context, in workflowInput) (string, error) {
 	closeCh := workflow.GetSignalChannel(ctx, signalClose)
 	childWaitCh := workflow.GetSignalChannel(ctx, signalChildWaiting)
 
-	sess := &durable.Session{
+	sess := &session.Session{
 		Task: in.Prompt,
-		Turn: durable.Turn{
+		Turn: session.Turn{
 			SessionID:  in.SessionID,
 			Specialist: in.Specialist,
 			Worker:     in.Worker,
 			Parent:     in.Parent,
-			Mounts:     durable.ApplyAuth(in.Mounts, durable.AuthContext{}),
+			Mounts:     session.ApplyAuth(in.Mounts, session.AuthContext{}),
 			MCP:        in.MCPServers,
 			Seed:       in.State,
 		},
@@ -56,32 +56,32 @@ func SessionWorkflow(ctx workflow.Context, in workflowInput) (string, error) {
 		childWaitCh: childWaitCh,
 		spawned:     &spawned,
 	}
-	_ = workflow.SetQueryHandler(ctx, queryStatus, func() (durable.SessionStatus, error) {
-		st := durable.SessionStatus{
+	_ = workflow.SetQueryHandler(ctx, queryStatus, func() (session.SessionStatus, error) {
+		st := session.SessionStatus{
 			ID:         in.SessionID,
 			Parent:     in.Parent,
 			Specialist: in.Specialist,
-			State:      durable.SessionRunning,
+			State:      session.SessionRunning,
 			Waiting:    sess.Turn.Yielded,
 			Result:     sess.Turn.Result,
 		}
 		if in.Worker != "" {
-			st.Kind = durable.SessionKindWorker
+			st.Kind = session.SessionKindWorker
 			st.Specialist = in.Worker
 		} else if in.Specialist != "" {
-			st.Kind = durable.SessionKindSpecialist
+			st.Kind = session.SessionKindSpecialist
 		}
 		if sess.Turn.Terminal != "" {
 			st.State = sess.Turn.Terminal
 			st.Waiting = false
 		} else if sess.Closed {
-			st.State = durable.SessionComplete
+			st.State = session.SessionComplete
 			st.Waiting = false
 		}
 		return st, nil
 	})
-	_ = workflow.SetQueryHandler(ctx, queryChildren, func() ([]durable.SessionID, error) {
-		out := make([]durable.SessionID, len(spawned))
+	_ = workflow.SetQueryHandler(ctx, queryChildren, func() ([]session.SessionID, error) {
+		out := make([]session.SessionID, len(spawned))
 		for i, c := range spawned {
 			out[i] = c.id
 		}
@@ -100,8 +100,8 @@ func activityOptions(in workflowInput) workflow.ActivityOptions {
 	}
 }
 
-// wfExec is the Temporal driver for one session. It implements durable.Step,
-// durable.Signals, and durable.Jobs.
+// wfExec is the Temporal driver for one session. It implements session.Step,
+// session.Mailbox, and session.Ledger.
 type wfExec struct {
 	ctx         workflow.Context
 	sessionCtx  workflow.Context
@@ -109,7 +109,7 @@ type wfExec struct {
 	open        bool
 	end         func(string, error)
 	in          workflowInput
-	turn        *durable.Turn
+	turn        *session.Turn
 	opts        workflow.ActivityOptions
 	promptCh    workflow.ReceiveChannel
 	resumeCh    workflow.ReceiveChannel
@@ -120,9 +120,9 @@ type wfExec struct {
 }
 
 var (
-	_ durable.Step    = (*wfExec)(nil)
-	_ durable.Signals = (*wfExec)(nil)
-	_ durable.Jobs    = (*wfExec)(nil)
+	_ session.Step    = (*wfExec)(nil)
+	_ session.Mailbox = (*wfExec)(nil)
+	_ session.Ledger  = (*wfExec)(nil)
 )
 
 func (w *wfExec) Begin(kind string, promptLen, resumes int) {
@@ -147,7 +147,7 @@ func (w *wfExec) End() {
 		outcome = telemetry.OutcomeYield
 	} else if errors.Is(w.turn.Err, context.Canceled) {
 		outcome = telemetry.OutcomeCancelled
-	} else if w.turn.Terminal == durable.SessionFailed {
+	} else if w.turn.Terminal == session.SessionFailed {
 		outcome = telemetry.OutcomeError
 	}
 	if w.end != nil {
@@ -164,21 +164,21 @@ func (w *wfExec) End() {
 	}
 }
 
-func (w *wfExec) Infer(in durable.InferenceInput) (durable.InferenceOutput, error) {
+func (w *wfExec) Infer(in session.InferenceInput) (session.InferenceOutput, error) {
 	var act *activities
-	var out durable.InferenceOutput
+	var out session.InferenceOutput
 	err := w.waitActivity(act.Inference, in, &out)
 	return out, err
 }
 
-func (w *wfExec) Tool(in durable.ToolInput) (durable.ToolOutput, error) {
+func (w *wfExec) Tool(in session.ToolInput) (session.ToolOutput, error) {
 	var act *activities
-	var out durable.ToolOutput
+	var out session.ToolOutput
 	err := w.waitActivity(act.Tool, in, &out)
 	return out, err
 }
 
-func (w *wfExec) Commit(in durable.CommitInput) error {
+func (w *wfExec) Commit(in session.CommitInput) error {
 	var act *activities
 	return w.waitActivity(act.CommitToolOutput, in, nil)
 }
@@ -226,12 +226,12 @@ func (w *wfExec) waitActivity(activity any, in, out any) error {
 	return errors.New(failureText(err))
 }
 
-func (w *wfExec) Prompts() []durable.PromptIn {
-	var out []durable.PromptIn
-	var p durable.PromptIn
+func (w *wfExec) Prompts() []session.PromptIn {
+	var out []session.PromptIn
+	var p session.PromptIn
 	for w.promptCh.ReceiveAsync(&p) {
 		out = append(out, p)
-		p = durable.PromptIn{}
+		p = session.PromptIn{}
 	}
 	return out
 }
@@ -243,7 +243,7 @@ func (w *wfExec) Ready() []*tacklr.Message {
 		if len(*w.spawned) == 0 {
 			return inbox
 		}
-		var gotID durable.SessionID
+		var gotID session.SessionID
 		var gotResult string
 		var gotErr error
 		ready := false
@@ -275,26 +275,26 @@ func (w *wfExec) Ready() []*tacklr.Message {
 	}
 }
 
-func (w *wfExec) Recv() durable.Wake {
+func (w *wfExec) Recv() session.Wake {
 	ctx := w.ctx
 	for {
-		var out durable.Wake
+		var out session.Wake
 		sel := workflow.NewSelector(ctx)
 		sel.AddReceive(w.promptCh, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, &out.Prompt)
-			out.Kind = durable.WakePrompt
+			out.Kind = session.WakePrompt
 		})
 		sel.AddReceive(w.resumeCh, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, &out.Resume)
-			out.Kind = durable.WakeResume
+			out.Kind = session.WakeResume
 		})
 		sel.AddReceive(w.cancelCh, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, nil)
-			out.Kind = durable.WakeCancel
+			out.Kind = session.WakeCancel
 		})
 		sel.AddReceive(w.closeCh, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, nil)
-			out.Kind = durable.WakeClose
+			out.Kind = session.WakeClose
 		})
 		sel.AddReceive(w.childWaitCh, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, nil)
@@ -306,9 +306,9 @@ func (w *wfExec) Recv() durable.Wake {
 	}
 }
 
-func (w *wfExec) Wait() durable.Wake {
+func (w *wfExec) Wait() session.Wake {
 	ctx := w.ctx
-	var wake durable.Wake
+	var wake session.Wake
 	sel := workflow.NewSelector(ctx)
 	for _, c := range *w.spawned {
 		if c.done {
@@ -319,32 +319,32 @@ func (w *wfExec) Wait() durable.Wake {
 			var result string
 			err := f.Get(ctx, &result)
 			if msg := markChildDone(w.spawned, id, result, err); msg != nil {
-				wake = durable.Wake{Kind: durable.WakeChild, Child: msg}
+				wake = session.Wake{Kind: session.WakeChild, Child: msg}
 			}
 		})
 	}
 	sel.AddReceive(w.promptCh, func(c workflow.ReceiveChannel, more bool) {
-		var p durable.PromptIn
+		var p session.PromptIn
 		c.Receive(ctx, &p)
-		wake = durable.Wake{Kind: durable.WakePrompt, Prompt: p}
+		wake = session.Wake{Kind: session.WakePrompt, Prompt: p}
 	})
 	sel.AddReceive(w.cancelCh, func(c workflow.ReceiveChannel, more bool) {
 		c.Receive(ctx, nil)
-		wake = durable.Wake{Kind: durable.WakeCancel}
+		wake = session.Wake{Kind: session.WakeCancel}
 	})
 	sel.Select(ctx)
 	return wake
 }
 
-func (w *wfExec) IDs() []durable.SessionID {
-	out := make([]durable.SessionID, len(*w.spawned))
+func (w *wfExec) IDs() []session.SessionID {
+	out := make([]session.SessionID, len(*w.spawned))
 	for i, c := range *w.spawned {
 		out[i] = c.id
 	}
 	return out
 }
 
-func (w *wfExec) Start(tout durable.ToolOutput) error {
+func (w *wfExec) Start(tout session.ToolOutput) error {
 	if tout.CancelID != "" {
 		cancelOne(w.ctx, w.spawned, tout.CancelID)
 	}
@@ -365,12 +365,12 @@ func (w *wfExec) Start(tout durable.ToolOutput) error {
 	return nil
 }
 
-func (w *wfExec) Await(id durable.SessionID) (string, error) {
+func (w *wfExec) Await(id session.SessionID) (string, error) {
 	ctx := w.ctx
 	for {
 		i := findChild(*w.spawned, id)
 		if i < 0 {
-			return "", durable.ErrSessionNotFound
+			return "", session.ErrSessionNotFound
 		}
 		if (*w.spawned)[i].done {
 			break
@@ -402,7 +402,7 @@ func (w *wfExec) Await(id durable.SessionID) (string, error) {
 	}
 	i := findChild(*w.spawned, id)
 	if i < 0 {
-		return "", durable.ErrSessionNotFound
+		return "", session.ErrSessionNotFound
 	}
 	c := (*w.spawned)[i]
 	dropChild(w.spawned, id)

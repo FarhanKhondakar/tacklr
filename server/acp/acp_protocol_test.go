@@ -89,16 +89,16 @@ func TestACP_WS_permissionMidTurn(t *testing.T) {
 	})
 	var invokeCount int
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			invokeCount++
-			if invokeCount == 1 {
-				ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventFunctionCall, ToolCalls: []tacklr.ToolCall{
-					{ID: "c1", CallID: "c1", Name: "sensitive", Arguments: `{}`},
-				}, IsComplete: true}
-				ch <- tacklr.LLMResponseChunk{IsComplete: true}
-				return
-			}
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "done", IsComplete: true}
-		})
+		invokeCount++
+		if invokeCount == 1 {
+			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventFunctionCall, ToolCalls: []tacklr.ToolCall{
+				{ID: "c1", CallID: "c1", Name: "sensitive", Arguments: `{}`},
+			}, IsComplete: true}
+			ch <- tacklr.LLMResponseChunk{IsComplete: true}
+			return
+		}
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "done", IsComplete: true}
+	})
 	r := newTestRuntime(t, strategy, tacklr.AgentOptions{Tools: []*tacklr.Tool{sensitive}})
 	hs, srv := startACPWSServer(t, r)
 
@@ -190,10 +190,10 @@ func TestACP_WS_disconnectCancelsInFlightTurn(t *testing.T) {
 	cancelled := make(chan struct{})
 	var once sync.Once
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			once.Do(func() { close(started) })
-			<-ctx.Done()
-			close(cancelled)
-		})
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		close(cancelled)
+	})
 	r := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	hs, _ := startACPWSServer(t, r)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -240,24 +240,24 @@ func TestACP_WS_disconnectCancelsInFlightTurn(t *testing.T) {
 // TestACP_prompt_stopReason_refusal: model terminal ErrModelRefused → PromptResponse refusal.
 func TestACP_prompt_stopReason_refusal(t *testing.T) {
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			ch <- tacklr.LLMResponseChunk{
-				Type:       tacklr.StreamEventError,
-				Error:      tacklr.ErrModelRefused,
-				Content:    "model refused",
-				IsComplete: true,
-			}
-		})
+		ch <- tacklr.LLMResponseChunk{
+			Type:       tacklr.StreamEventError,
+			Error:      tacklr.ErrModelRefused,
+			Content:    "model refused",
+			IsComplete: true,
+		}
+	})
 	assertACPStopReason(t, strategy, nil, "refusal")
 }
 
 func TestACP_prompt_stopReason_maxTokens(t *testing.T) {
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			ch <- tacklr.LLMResponseChunk{
-				Type:       tacklr.StreamEventError,
-				Error:      tacklr.ErrMaxTokens,
-				IsComplete: true,
-			}
-		})
+		ch <- tacklr.LLMResponseChunk{
+			Type:       tacklr.StreamEventError,
+			Error:      tacklr.ErrMaxTokens,
+			IsComplete: true,
+		}
+	})
 	assertACPStopReason(t, strategy, nil, "max_tokens")
 }
 
@@ -271,16 +271,16 @@ func TestACP_prompt_stopReason_maxTurnRequests(t *testing.T) {
 	})
 	var n int
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			n++
-			ch <- tacklr.LLMResponseChunk{
-				Type: tacklr.StreamEventFunctionCall,
-				ToolCalls: []tacklr.ToolCall{
-					{ID: "c1", CallID: "c1", Name: "ping", Arguments: `{}`},
-				},
-				IsComplete: true,
-			}
-			ch <- tacklr.LLMResponseChunk{IsComplete: true}
-		})
+		n++
+		ch <- tacklr.LLMResponseChunk{
+			Type: tacklr.StreamEventFunctionCall,
+			ToolCalls: []tacklr.ToolCall{
+				{ID: "c1", CallID: "c1", Name: "ping", Arguments: `{}`},
+			},
+			IsComplete: true,
+		}
+		ch <- tacklr.LLMResponseChunk{IsComplete: true}
+	})
 	r := newTestRuntime(t, strategy, tacklr.AgentOptions{MaxTurnRequests: 1,
 		Tools: []*tacklr.Tool{ping}})
 	recNew := serveACPRaw(t, r, `{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp"}}`)
@@ -312,9 +312,9 @@ func TestACP_sessionCancel_stopReasonCancelled(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			once.Do(func() { close(started) })
-			<-ctx.Done()
-		})
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+	})
 	r := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	srv := server.NewServer(r.Runtime, r.Agent, acp.New(server.NewMemoryWireStore()))
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)

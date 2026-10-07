@@ -17,10 +17,10 @@ import (
 	"github.com/ryanaldo34/tacklr/server/acp"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/livesess"
 	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/telemetry"
 )
 
@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 }
 
 type testRuntime struct {
-	Runtime durable.Runtime
+	Runtime session.Runtime
 	Agent   tacklr.AgentOptions
 }
 

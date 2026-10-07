@@ -1,4 +1,4 @@
-// Package temporal is the Temporal adapter for durable.Runtime.
+// Package temporal is the Temporal adapter for session.Runtime.
 // Hosts use Dial, New, and NewWorker with the same Config (including
 // Snapshots and Secrets). NewWorker registers SessionWorkflow and the
 // turn activities.
@@ -26,29 +26,29 @@ import (
 	"github.com/ryanaldo34/tacklr/telemetry"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
-	adapter "github.com/ryanaldo34/tacklr/durable/internal"
 	"github.com/ryanaldo34/tacklr/mcp"
+	"github.com/ryanaldo34/tacklr/session"
+	adapter "github.com/ryanaldo34/tacklr/session/internal"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
-// Runtime implements durable.Runtime with one Temporal workflow per session.
+// Runtime implements session.Runtime with one Temporal workflow per session.
 type Runtime struct {
 	client              client.Client
 	taskQueue           string
 	agent               tacklr.AgentOptions
-	fallback            durable.EventLog
-	snapshots           durable.SnapshotStore
+	fallback            session.EventLog
+	snapshots           session.SnapshotStore
 	disableStreams      bool
 	turnLocalityTimeout time.Duration
 	activityTimeout     time.Duration
 	heartbeatTimeout    time.Duration
 	activityAttempts    int32
-	secrets             durable.SecretStorage
-	jobs                map[string]durable.JobHandler
+	secrets             session.SecretStorage
+	jobs                map[string]session.JobHandler
 
 	mu     sync.Mutex
-	closed map[durable.SessionID]struct{}
+	closed map[session.SessionID]struct{}
 }
 
 const (
@@ -65,8 +65,8 @@ type Config struct {
 	TaskQueue string
 	// Snapshots is the session record. Required. New and NewWorker must share
 	// the same instance. Tokens never go here.
-	Snapshots  durable.SnapshotStore
-	Fallback   durable.EventLog
+	Snapshots  session.SnapshotStore
+	Fallback   session.EventLog
 	Projection vfs.Projection
 	// DisableStreams uses the fallback EventLog instead of Workflow Streams.
 	DisableStreams bool
@@ -82,10 +82,10 @@ type Config struct {
 	ActivityAttempts int32
 	// Secrets holds work-item credentials for activities. Required. New and
 	// NewWorker must share the same instance. Tokens never enter event history.
-	Secrets durable.SecretStorage
+	Secrets session.SecretStorage
 	// Jobs are named background workers Schedule can start. Specialist
 	// names on the catalog take precedence.
-	Jobs map[string]durable.JobHandler
+	Jobs map[string]session.JobHandler
 }
 
 func (c Config) queue() string {
@@ -108,11 +108,11 @@ func requireCfg(cfg Config) {
 	}
 }
 
-func (c Config) eventLog() durable.EventLog {
+func (c Config) eventLog() session.EventLog {
 	if c.Fallback != nil {
 		return c.Fallback
 	}
-	return durable.NewMemoryEventLog()
+	return session.NewMemoryEventLog()
 }
 
 // New constructs a Temporal Runtime. The host must also run NewWorker on the
@@ -135,12 +135,12 @@ func New(c client.Client, cfg Config) *Runtime {
 		activityAttempts:    cmp.Or(cfg.ActivityAttempts, defaultActivityAttempts),
 		secrets:             cfg.Secrets,
 		jobs:                cfg.Jobs,
-		closed:              make(map[durable.SessionID]struct{}),
+		closed:              make(map[session.SessionID]struct{}),
 	}
 }
 
-// CreateSession implements durable.Runtime.
-func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) (durable.SessionID, error) {
+// CreateSession implements session.Runtime.
+func (r *Runtime) CreateSession(ctx context.Context, req session.CreateSession) (session.SessionID, error) {
 	if req.Worker != "" && req.Specialist != "" {
 		return "", fmt.Errorf("specialist and worker are exclusive: %w", tacklr.ErrInvalid)
 	}
@@ -151,7 +151,7 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 	}
 	id := req.SessionID
 	if id == "" {
-		id = durable.SessionID(uuid.NewString())
+		id = session.SessionID(uuid.NewString())
 	}
 	seed, err := adapter.EncodeUserState(req.State)
 	if err != nil {
@@ -179,38 +179,38 @@ func (r *Runtime) CreateSession(ctx context.Context, req durable.CreateSession) 
 	return id, nil
 }
 
-func (r *Runtime) markClosed(id durable.SessionID) {
+func (r *Runtime) markClosed(id session.SessionID) {
 	r.mu.Lock()
 	r.closed[id] = struct{}{}
 	r.mu.Unlock()
 }
 
-func (r *Runtime) isClosed(id durable.SessionID) bool {
+func (r *Runtime) isClosed(id session.SessionID) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.closed[id]
 	return ok
 }
 
-func (r *Runtime) signal(ctx context.Context, id durable.SessionID, name string, arg any) error {
+func (r *Runtime) signal(ctx context.Context, id session.SessionID, name string, arg any) error {
 	if name != signalClose && r.isClosed(id) {
-		return durable.ErrSessionNotFound
+		return session.ErrSessionNotFound
 	}
 	if err := r.client.SignalWorkflow(ctx, string(id), "", name, arg); err != nil {
-		return durable.ErrSessionNotFound
+		return session.ErrSessionNotFound
 	}
 	return nil
 }
 
-func (r *Runtime) Prompt(ctx context.Context, sessionID durable.SessionID, msg durable.Prompt) error {
+func (r *Runtime) Prompt(ctx context.Context, sessionID session.SessionID, msg session.Prompt) error {
 	encoded, err := adapter.EncodeUserState(msg.State)
 	if err != nil {
 		return err
 	}
-	if err := r.secrets.Put(ctx, sessionID, durable.Secrets{Auth: msg.Auth}); err != nil {
+	if err := r.secrets.Put(ctx, sessionID, session.Secrets{Auth: msg.Auth}); err != nil {
 		return err
 	}
-	return r.signal(ctx, sessionID, signalPrompt, durable.PromptIn{
+	return r.signal(ctx, sessionID, signalPrompt, session.PromptIn{
 		Text:        msg.Text,
 		UserMessage: msg.UserMessage,
 		MCPServers:  mcp.DurableConfigs(msg.MCPServers),
@@ -219,37 +219,37 @@ func (r *Runtime) Prompt(ctx context.Context, sessionID durable.SessionID, msg d
 	})
 }
 
-func (r *Runtime) Resume(ctx context.Context, sessionID durable.SessionID, resume durable.Resume) error {
+func (r *Runtime) Resume(ctx context.Context, sessionID session.SessionID, resume session.Resume) error {
 	encoded, err := adapter.EncodeUserState(resume.State)
 	if err != nil {
 		return err
 	}
-	if err := r.secrets.Put(ctx, sessionID, durable.Secrets{Auth: resume.Auth}); err != nil {
+	if err := r.secrets.Put(ctx, sessionID, session.Secrets{Auth: resume.Auth}); err != nil {
 		return err
 	}
-	return r.signal(ctx, sessionID, signalResume, durable.ResumeIn{
+	return r.signal(ctx, sessionID, signalResume, session.ResumeIn{
 		Responses: resume.Responses,
 		Auth:      resume.Auth.WithoutSecrets(),
 		State:     encoded,
 	})
 }
 
-// Cancel implements durable.Runtime.
-func (r *Runtime) Cancel(ctx context.Context, sessionID durable.SessionID) error {
+// Cancel implements session.Runtime.
+func (r *Runtime) Cancel(ctx context.Context, sessionID session.SessionID) error {
 	cancelLiveTurn(sessionID)
 	return r.signal(ctx, sessionID, signalCancel, nil)
 }
 
-// Close implements durable.Runtime.
-func (r *Runtime) Close(ctx context.Context, sessionID durable.SessionID) error {
+// Close implements session.Runtime.
+func (r *Runtime) Close(ctx context.Context, sessionID session.SessionID) error {
 	kids, _ := r.Children(ctx, sessionID)
 	r.markClosed(sessionID)
 	_ = r.signal(ctx, sessionID, signalClose, nil)
 	for _, k := range kids {
-		durable.DeleteSessionMessages(ctx, r.agent, k)
+		session.DeleteSessionMessages(ctx, r.agent, k)
 		_ = r.secrets.Delete(ctx, k)
 	}
-	durable.DeleteSessionMessages(ctx, r.agent, sessionID)
+	session.DeleteSessionMessages(ctx, r.agent, sessionID)
 	_ = r.secrets.Delete(ctx, sessionID)
 	_ = r.snapshots.Delete(ctx, sessionID)
 	_ = r.fallback.CloseSession(ctx, sessionID)
@@ -269,23 +269,23 @@ func (s *sub) Close() error {
 	return nil
 }
 
-// Head implements durable.Runtime. When Workflow Streams is on, this is the
+// Head implements session.Runtime. When Workflow Streams is on, this is the
 // stream's next offset so Subscribe(after Head) skips prior-turn events.
-func (r *Runtime) Head(ctx context.Context, sessionID durable.SessionID) (durable.Seq, error) {
+func (r *Runtime) Head(ctx context.Context, sessionID session.SessionID) (session.Seq, error) {
 	if !r.disableStreams {
 		val, err := r.client.QueryWorkflow(ctx, string(sessionID), "", workflowstreams.OffsetQueryName)
 		if err == nil {
 			var n int64
 			if err := val.Get(&n); err == nil && n >= 0 {
-				return durable.Seq(n), nil //nolint:gosec // G115: stream offsets are well below MaxUint64
+				return session.Seq(n), nil //nolint:gosec // G115: stream offsets are well below MaxUint64
 			}
 		}
 	}
 	return r.fallback.Head(ctx, sessionID)
 }
 
-// Subscribe implements durable.Runtime.
-func (r *Runtime) Subscribe(ctx context.Context, sessionID durable.SessionID, after durable.Seq) (durable.Subscription, error) {
+// Subscribe implements session.Runtime.
+func (r *Runtime) Subscribe(ctx context.Context, sessionID session.SessionID, after session.Seq) (session.Subscription, error) {
 	subCtx, cancel := context.WithCancel(ctx)
 	if r.disableStreams {
 		src, err := r.fallback.Subscribe(subCtx, sessionID, after)
@@ -312,7 +312,7 @@ func (r *Runtime) Subscribe(ctx context.Context, sessionID durable.SessionID, af
 		defer func() { _ = c.Close(subCtx) }()
 		off := int64(after) //nolint:gosec // G115: EventLog seq is well below MaxInt64
 		for item, err := range c.Subscribe(subCtx, workflowstreams.SubscribeOptions{
-			Topics:     []string{durable.TopicEvents},
+			Topics:     []string{session.TopicEvents},
 			FromOffset: off,
 		}) {
 			if err != nil {
@@ -356,27 +356,27 @@ func failFromWire(s string) error {
 	return errors.New(s)
 }
 
-// Children implements durable.Runtime.
-func (r *Runtime) Children(ctx context.Context, parent durable.SessionID) ([]durable.SessionID, error) {
+// Children implements session.Runtime.
+func (r *Runtime) Children(ctx context.Context, parent session.SessionID) ([]session.SessionID, error) {
 	if r.isClosed(parent) {
-		return nil, durable.ErrSessionNotFound
+		return nil, session.ErrSessionNotFound
 	}
 	val, err := r.client.QueryWorkflow(ctx, string(parent), "", queryChildren)
 	if err != nil {
-		return nil, durable.ErrSessionNotFound
+		return nil, session.ErrSessionNotFound
 	}
-	var ids []durable.SessionID
+	var ids []session.SessionID
 	_ = val.Get(&ids)
 	return ids, nil
 }
 
-// Jobs implements durable.Runtime.
-func (r *Runtime) Jobs(ctx context.Context, parent durable.SessionID) ([]durable.SessionStatus, error) {
+// Jobs implements session.Runtime.
+func (r *Runtime) Jobs(ctx context.Context, parent session.SessionID) ([]session.SessionStatus, error) {
 	ids, err := r.Children(ctx, parent)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]durable.SessionStatus, 0, len(ids))
+	out := make([]session.SessionStatus, 0, len(ids))
 	for _, id := range ids {
 		st, err := r.Status(ctx, id)
 		if err != nil {
@@ -387,15 +387,15 @@ func (r *Runtime) Jobs(ctx context.Context, parent durable.SessionID) ([]durable
 	return out, nil
 }
 
-// Status implements durable.Runtime.
-func (r *Runtime) Status(ctx context.Context, id durable.SessionID) (durable.SessionStatus, error) {
-	st := durable.SessionStatus{ID: id, State: durable.SessionUnknown}
+// Status implements session.Runtime.
+func (r *Runtime) Status(ctx context.Context, id session.SessionID) (session.SessionStatus, error) {
+	st := session.SessionStatus{ID: id, State: session.SessionUnknown}
 	if r.isClosed(id) {
-		return st, durable.ErrSessionNotFound
+		return st, session.ErrSessionNotFound
 	}
 	val, err := r.client.QueryWorkflow(ctx, string(id), "", queryStatus)
 	if err != nil {
-		return st, durable.ErrSessionNotFound
+		return st, session.ErrSessionNotFound
 	}
 	_ = val.Get(&st)
 	return st, nil

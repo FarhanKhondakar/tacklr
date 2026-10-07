@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // Wire-facing sentinels. Session/agent/auth groups are the owning package's
@@ -14,7 +14,7 @@ var (
 	ErrInvalidRequest         = errors.New("invalid request")
 	ErrMethodNotFound         = errors.New("method not found")
 	ErrInternal               = errors.New("internal server error")
-	ErrSessionNotFound        = durable.ErrSessionNotFound
+	ErrSessionNotFound        = session.ErrSessionNotFound
 	ErrAuthenticationRequired = tacklrsecurity.ErrAuthenticationRequired
 	ErrAuthenticationFailed   = tacklrsecurity.ErrAuthenticationFailed
 	ErrAuthorizationDenied    = tacklrsecurity.ErrAuthorizationDenied

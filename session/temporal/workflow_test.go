@@ -20,8 +20,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -35,13 +35,13 @@ func TestSessionWorkflow_inferenceRefusedFailsTurn(t *testing.T) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventError, Error: tacklr.ErrModelRefused}
 	}),
 		MaxWindowSize: 8192}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 
-	id := durable.SessionID("sess-model-refused")
+	id := session.SessionID("sess-model-refused")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -55,7 +55,7 @@ func TestSessionWorkflow_inferenceRefusedFailsTurn(t *testing.T) {
 		t.Fatalf("refusal attempts = %d, want 3", n)
 	}
 	st := querySession(t, env)
-	if st.State != durable.SessionFailed || st.Waiting {
+	if st.State != session.SessionFailed || st.Waiting {
 		t.Fatalf("status %+v", st)
 	}
 	var saw bool
@@ -81,13 +81,13 @@ func TestSessionWorkflow_permanentInferenceDoesNotRetry(t *testing.T) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventError, Error: tacklr.ErrApiKeyNotSet, Content: tacklr.ErrApiKeyNotSet.Error()}
 	}),
 		MaxWindowSize: 8192}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 
-	id := durable.SessionID("sess-permanent")
+	id := session.SessionID("sess-permanent")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -101,7 +101,7 @@ func TestSessionWorkflow_permanentInferenceDoesNotRetry(t *testing.T) {
 		t.Fatalf("permanent attempts = %d, want 1", n)
 	}
 	st := querySession(t, env)
-	if st.State != durable.SessionFailed || st.Waiting {
+	if st.State != session.SessionFailed || st.Waiting {
 		t.Fatalf("status %+v", st)
 	}
 	var saw bool
@@ -131,13 +131,13 @@ func TestSessionWorkflow_activityRetryThenCompletes(t *testing.T) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "after-retry", IsComplete: true}
 	})
 	agent := tacklr.AgentOptions{Model: model, MaxWindowSize: 8192}
-	fallback := &retryLog{EventLog: durable.NewMemoryEventLog()}
+	fallback := &retryLog{EventLog: session.NewMemoryEventLog()}
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 
-	id := durable.SessionID("sess-retry")
+	id := session.SessionID("sess-retry")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "hi"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "hi"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -160,7 +160,7 @@ func TestSessionWorkflow_activityRetryThenCompletes(t *testing.T) {
 	if !sawMsg {
 		t.Fatalf("want after-retry, got %+v", got)
 	}
-	if st := querySession(t, env); st.State != durable.SessionComplete {
+	if st := querySession(t, env); st.State != session.SessionComplete {
 		t.Fatalf("Status after retry: %+v", st)
 	}
 }
@@ -193,16 +193,16 @@ func TestSessionWorkflow_authExpiredYieldThenResume(t *testing.T) {
 		}
 	})
 	agent := tacklr.AgentOptions{Model: model, MaxWindowSize: 8192, Tools: []*tacklr.Tool{cloud}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 
-	id := durable.SessionID("sess-auth")
+	id := session.SessionID("sess-auth")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "read"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "read"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalResume, durable.ResumeIn{Responses: map[string][]byte{"c1": []byte(`{}`)}})
+		env.SignalWorkflow(signalResume, session.ResumeIn{Responses: map[string][]byte{"c1": []byte(`{}`)}})
 	}, 20*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -225,7 +225,7 @@ func TestSessionWorkflow_authExpiredYieldThenResume(t *testing.T) {
 	if !yielded || !saw {
 		t.Fatalf("want yield + retried read, got %+v", got)
 	}
-	if st := querySession(t, env); st.State != durable.SessionComplete {
+	if st := querySession(t, env); st.State != session.SessionComplete {
 		t.Fatalf("Status after auth resume: %+v", st)
 	}
 }
@@ -270,17 +270,17 @@ func TestSessionWorkflow_parallelBatchHitlRunsRemainder(t *testing.T) {
 			}),
 			tacklr.NewTool(tacklr.ToolConfig{Name: "beta", Handler: func(context.Context) (string, error) { return "from-beta", nil }}),
 		}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 
-	id := durable.SessionID("sess-parallel-hitl")
+	id := session.SessionID("sess-parallel-hitl")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "batch"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "batch"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		payload, _ := json.Marshal(map[string]string{"optionId": "allow-once"})
-		env.SignalWorkflow(signalResume, durable.ResumeIn{Responses: map[string][]byte{"fc_gate": payload}})
+		env.SignalWorkflow(signalResume, session.ResumeIn{Responses: map[string][]byte{"fc_gate": payload}})
 	}, 20*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -314,13 +314,13 @@ func TestSessionWorkflow_hitlCancel(t *testing.T) {
 		}
 	})
 	agent := tacklr.AgentOptions{Model: model, MaxWindowSize: 8192}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 
-	id := durable.SessionID("sess-hitl-cancel")
+	id := session.SessionID("sess-hitl-cancel")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "ask"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "ask"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalCancel, nil)
@@ -385,11 +385,11 @@ func TestSessionWorkflow_mixedBatchPairsBeforeNextRound(t *testing.T) {
 		Specialists: []*tacklr.Specialist{
 			{Name: "blocker", Model: model},
 		}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-mixed-spawn")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
+	id := session.SessionID("sess-mixed-spawn")
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 120*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
@@ -417,7 +417,7 @@ func TestSessionWorkflow_asyncSpawnDoesNotWaitForChild(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.SetWorkerOptions(worker.Options{EnableSessionWorker: true})
-	id := durable.SessionID("sess-async-spawn")
+	id := session.SessionID("sess-async-spawn")
 	model := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 		last := lastMsg(msgs)
 		if last != nil && last.Role == tacklr.RoleUser && last.Content == "child-task" {
@@ -458,7 +458,7 @@ func TestSessionWorkflow_asyncSpawnDoesNotWaitForChild(t *testing.T) {
 			Name:  "researcher",
 			Model: model,
 		}}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 	var childStarted atomic.Bool
@@ -466,7 +466,7 @@ func TestSessionWorkflow_asyncSpawnDoesNotWaitForChild(t *testing.T) {
 		childStarted.Store(true)
 	})
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -488,7 +488,7 @@ func TestSessionWorkflow_asyncSpawnDoesNotWaitForChild(t *testing.T) {
 			sawScheduled = true
 		}
 	}
-	childGot := drainLog(t, fallback, durable.ChildSessionID(id, "researcher", "sp1"))
+	childGot := drainLog(t, fallback, session.ChildSessionID(id, "researcher", "sp1"))
 	var sawChild bool
 	for _, ev := range childGot {
 		if ev.Type == tacklr.StreamEventMessage && strings.Contains(ev.Content, "async-child") {
@@ -516,7 +516,7 @@ func TestSessionWorkflow_listChildren(t *testing.T) {
 				return
 			}
 			if strings.Contains(last.Content, "Jobs:") {
-				childID := string(durable.ChildSessionID("sess-list-children", "researcher", "sp1"))
+				childID := string(session.ChildSessionID("sess-list-children", "researcher", "sp1"))
 				ch <- tacklr.LLMResponseChunk{
 					Type: tacklr.StreamEventFunctionCall,
 					ToolCalls: []tacklr.ToolCall{{
@@ -550,12 +550,12 @@ func TestSessionWorkflow_listChildren(t *testing.T) {
 		Specialists: []*tacklr.Specialist{{
 			Name: "researcher", Model: model,
 		}}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 	env.OnRequestCancelExternalWorkflow(mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	id := durable.SessionID("sess-list-children")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
+	id := session.SessionID("sess-list-children")
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 120*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
@@ -615,7 +615,7 @@ func TestSessionWorkflow_cancelStopsAsyncChild(t *testing.T) {
 			Name:  "researcher",
 			Model: model,
 		}}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 	var childStarted atomic.Bool
@@ -627,10 +627,10 @@ func TestSessionWorkflow_cancelStopsAsyncChild(t *testing.T) {
 	env.SetOnChildWorkflowCompletedListener(func(info *workflow.Info, result converter.EncodedValue, err error) {
 		childErr = err
 	})
-	id := durable.SessionID("sess-cancel-child")
-	childID := durable.ChildSessionID(id, "researcher", "sp1")
+	id := session.SessionID("sess-cancel-child")
+	childID := session.ChildSessionID(id, "researcher", "sp1")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -643,13 +643,13 @@ func TestSessionWorkflow_cancelStopsAsyncChild(t *testing.T) {
 		t.Fatal("want async child started before cancel")
 	}
 	st := querySession(t, env)
-	if st.State != durable.SessionFailed || st.Waiting {
+	if st.State != session.SessionFailed || st.Waiting {
 		t.Fatalf("parent status %+v", st)
 	}
 	if childErr == nil {
 		if val, qerr := env.QueryWorkflowByID(string(childID), queryStatus); qerr == nil {
-			var cst durable.SessionStatus
-			if err := val.Get(&cst); err == nil && cst.State == durable.SessionFailed {
+			var cst session.SessionStatus
+			if err := val.Get(&cst); err == nil && cst.State == session.SessionFailed {
 				return
 			}
 		}
@@ -698,15 +698,15 @@ func TestSessionWorkflow_steerDuringYieldKeepsPark(t *testing.T) {
 		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "chose", IsComplete: true}
 	})
 	agent := tacklr.AgentOptions{Model: model, MaxWindowSize: 8192}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-steer-yield")
+	id := session.SessionID("sess-steer-yield")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "ask"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "ask"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "steer"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "steer"})
 		st := querySession(t, env)
 		if !st.Waiting {
 			t.Error("steer must keep the park")
@@ -718,7 +718,7 @@ func TestSessionWorkflow_steerDuringYieldKeepsPark(t *testing.T) {
 	env.RegisterDelayedCallback(func() {
 		resumed.Store(true)
 		payload, _ := json.Marshal(map[string]any{"selectionIdx": 0})
-		env.SignalWorkflow(signalResume, durable.ResumeIn{Responses: map[string][]byte{"ask1": payload}})
+		env.SignalWorkflow(signalResume, session.ResumeIn{Responses: map[string][]byte{"ask1": payload}})
 	}, 40*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -749,8 +749,8 @@ func TestSessionWorkflow_failedAsyncChildJobAbsorbed(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.SetWorkerOptions(worker.Options{EnableSessionWorker: true})
-	id := durable.SessionID("sess-async-fail")
-	childID := durable.ChildSessionID(id, "researcher", "sp1")
+	id := session.SessionID("sess-async-fail")
+	childID := session.ChildSessionID(id, "researcher", "sp1")
 	model := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 		last := lastMsg(msgs)
 		if last != nil && last.Role == tacklr.RoleUser && last.Content == "child-task" {
@@ -791,11 +791,11 @@ func TestSessionWorkflow_failedAsyncChildJobAbsorbed(t *testing.T) {
 			Name:  "researcher",
 			Model: model,
 		}}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -818,7 +818,7 @@ func TestSessionWorkflow_failedAsyncChildJobAbsorbed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var kids []durable.SessionID
+	var kids []session.SessionID
 	if err := val.Get(&kids); err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ func TestSessionWorkflow_workerChildCompletesParent(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.SetWorkerOptions(worker.Options{EnableSessionWorker: true})
-	id := durable.SessionID("sess-worker")
+	id := session.SessionID("sess-worker")
 	model := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
 		var scheduled, collected bool
 		for _, m := range msgs {
@@ -875,9 +875,9 @@ func TestSessionWorkflow_workerChildCompletesParent(t *testing.T) {
 	agent := tacklr.AgentOptions{Model: model,
 		MaxWindowSize: 8192,
 		Tools:         []*tacklr.Tool{watch}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	acts := newActs(agent, fallback, true)
-	acts.Jobs = map[string]durable.JobHandler{
+	acts.Jobs = map[string]session.JobHandler{
 		"ci": func(ctx context.Context, task string) (string, error) { return "green", nil },
 	}
 	env.RegisterWorkflow(SessionWorkflow)
@@ -887,7 +887,7 @@ func TestSessionWorkflow_workerChildCompletesParent(t *testing.T) {
 		childStarted.Store(true)
 	})
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"})
+		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalClose, nil)
@@ -935,17 +935,17 @@ func TestSessionWorkflow_toolFailureStaysInTheWindow(t *testing.T) {
 		}
 	})
 	agent := tacklr.AgentOptions{Model: model, MaxWindowSize: 8192, Tools: []*tacklr.Tool{boom}}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-tool-failed")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
+	id := session.SessionID("sess-tool-failed")
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 80*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if st := querySession(t, env); st.State != durable.SessionComplete {
+	if st := querySession(t, env); st.State != session.SessionComplete {
 		t.Fatalf("status %+v", st)
 	}
 	var saw bool
@@ -982,17 +982,17 @@ func TestSessionWorkflow_missingPathIsACorrection(t *testing.T) {
 		Model: model, MaxWindowSize: 8192,
 		OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(dir))),
 	}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-missing-path")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "read"}) }, time.Millisecond)
+	id := session.SessionID("sess-missing-path")
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "read"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 80*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if st := querySession(t, env); st.State != durable.SessionComplete {
+	if st := querySession(t, env); st.State != session.SessionComplete {
 		t.Fatalf("status %+v", st)
 	}
 	var saw bool
@@ -1025,14 +1025,14 @@ func TestSessionWorkflow_badWorkspaceBindingFailsTurn(t *testing.T) {
 		Model: model, MaxWindowSize: 8192,
 		OpenVFS: vfs.Tree(vfs.At("docs", vfs.Local(missing))),
 	}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-bad-binding")
+	id := session.SessionID("sess-bad-binding")
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalPrompt, durable.PromptIn{
+		env.SignalWorkflow(signalPrompt, session.PromptIn{
 			Text: "read",
-			Auth: durable.AuthContext{Bindings: []vfs.Binding{{
+			Auth: session.AuthContext{Bindings: []vfs.Binding{{
 				Provider: "local",
 				Params:   map[string]string{vfs.ParamName: "docs"},
 				Auth:     vfs.Credential{Token: "x"},
@@ -1044,7 +1044,7 @@ func TestSessionWorkflow_badWorkspaceBindingFailsTurn(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if st := querySession(t, env); st.State != durable.SessionFailed {
+	if st := querySession(t, env); st.State != session.SessionFailed {
 		t.Fatalf("status %+v events %+v", st, drainLog(t, fallback, id))
 	}
 }
@@ -1103,11 +1103,11 @@ func TestSessionWorkflow_grandchildResultReachesParent(t *testing.T) {
 			}},
 		}},
 	}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-grandchild")
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
+	id := session.SessionID("sess-grandchild")
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 150*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
@@ -1171,19 +1171,19 @@ func TestSessionWorkflow_parkedParentLeavesAsyncChildRunning(t *testing.T) {
 		Model: model, MaxWindowSize: 8192,
 		Specialists: []*tacklr.Specialist{{Name: "researcher", Model: model}},
 	}
-	fallback := durable.NewMemoryEventLog()
+	fallback := session.NewMemoryEventLog()
 	env.RegisterWorkflow(SessionWorkflow)
 	env.RegisterActivity(newActs(agent, fallback, true))
-	id := durable.SessionID("sess-park-child")
-	childID := durable.ChildSessionID(id, "researcher", "sp1")
+	id := session.SessionID("sess-park-child")
+	childID := session.ChildSessionID(id, "researcher", "sp1")
 	var sawChild bool
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, durable.PromptIn{Text: "go"}) }, time.Millisecond)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"}) }, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
 		val, err := env.QueryWorkflow(queryChildren)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var ids []durable.SessionID
+		var ids []session.SessionID
 		if err := val.Get(&ids); err != nil {
 			t.Fatal(err)
 		}
@@ -1198,7 +1198,7 @@ func TestSessionWorkflow_parkedParentLeavesAsyncChildRunning(t *testing.T) {
 		once.Do(func() { close(release) })
 	}, 40*time.Millisecond)
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalResume, durable.ResumeIn{
+		env.SignalWorkflow(signalResume, session.ResumeIn{
 			Responses: map[string][]byte{"ask1": []byte(`{"selectionIdx":0}`)},
 		})
 	}, 60*time.Millisecond)

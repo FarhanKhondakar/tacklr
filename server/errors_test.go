@@ -13,9 +13,9 @@ import (
 	"github.com/ryanaldo34/tacklr/server"
 	"github.com/ryanaldo34/tacklr/server/acp"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // TestHandleInbound_errorContract is the host/client recovery contract:
@@ -362,7 +362,7 @@ func TestHandleInbound_sessionWireOutcomes(t *testing.T) {
 		t.Fatal("want unauthenticated session.load")
 	}
 
-	downRT := fakeRuntime{create: func(context.Context, durable.CreateSession) (durable.SessionID, error) {
+	downRT := fakeRuntime{create: func(context.Context, session.CreateSession) (session.SessionID, error) {
 		return "", errors.New("runtime down")
 	}}
 	if err := inboundWrittenError(t, acp.New(nil), server.ProtocolEnv{Runtime: downRT, Agent: k.Agent},

@@ -10,7 +10,7 @@
 //   - mcp owns MCP connection configuration.
 //
 // Process-wide registrations (built-in interrupts, common VFS codecs, the
-// durable driver adapter) run in this package's init. Hosts import tacklr
+// session driver adapter) run in this package's init. Hosts import tacklr
 // once; they do not register those defaults themselves.
 //
 // New APIs should use the canonical domain packages and must not add server

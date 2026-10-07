@@ -7,16 +7,16 @@ import (
 	"time"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 const defaultHTTPShutdown = 5 * time.Second
 
-// Server serves a durable.Runtime over HTTP, with WebSocket when the request upgrades.
+// Server serves a session.Runtime over HTTP, with WebSocket when the request upgrades.
 // Protocols is the ordered list of wire implementations (ACP and/or host protocols).
 type Server struct {
-	Runtime   durable.Runtime
+	Runtime   session.Runtime
 	Agent     tacklr.AgentOptions
 	Protocols []Protocol
 	// Connections tracks ACP WebSocket connections.
@@ -33,7 +33,7 @@ type Server struct {
 
 // NewServer wraps a Runtime and one or more Protocols.
 // The ACP built-in is acp.New. Pass more Protocols to mount them on the same mux.
-func NewServer(rt durable.Runtime, agent tacklr.AgentOptions, protocols ...Protocol) *Server {
+func NewServer(rt session.Runtime, agent tacklr.AgentOptions, protocols ...Protocol) *Server {
 	if rt == nil || len(protocols) == 0 {
 		panic("server: Runtime and at least one Protocol are required")
 	}

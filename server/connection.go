@@ -9,7 +9,7 @@ import (
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
 )
 
-// Connection is one WebSocket. Harness sessions live on durable.Runtime.
+// Connection is one WebSocket. Harness sessions live on session.Runtime.
 type Connection struct {
 	ID     string
 	Writer MessageWriter

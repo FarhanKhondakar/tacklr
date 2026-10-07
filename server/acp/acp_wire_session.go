@@ -13,9 +13,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/mcp"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 	"github.com/ryanaldo34/tacklr/telemetry"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -63,10 +63,10 @@ func (s *acpWireSession) cwdMismatch(cwd string) error {
 	return nil
 }
 
-func (s *acpWireSession) takeAuth() durable.AuthContext {
+func (s *acpWireSession) takeAuth() session.AuthContext {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := durable.AuthContext{
+	out := session.AuthContext{
 		Bindings: append([]vfs.Binding(nil), s.vfs...),
 		Drop:     append([]string(nil), s.vfsDrop...),
 	}
@@ -197,8 +197,8 @@ func (p *acpProtocol) createSession(ctx context.Context, env server.ProtocolEnv,
 	p.sessions[sessionID] = sess
 	p.mu.Unlock()
 	telemetry.MustInstruments(telemetry.Meter()).RecordSessionCreated(ctx)
-	if _, err := env.Runtime.CreateSession(ctx, durable.CreateSession{
-		SessionID:  durable.SessionID(sessionID),
+	if _, err := env.Runtime.CreateSession(ctx, session.CreateSession{
+		SessionID:  session.SessionID(sessionID),
 		MCPServers: pr.MCPServers,
 	}); err != nil {
 		return "", nil, err
@@ -232,11 +232,11 @@ func (p *acpProtocol) loadSession(ctx context.Context, env server.ProtocolEnv, p
 	if err := p.persistWire(ctx, sessionID, sess); err != nil {
 		return nil, err
 	}
-	_, err = env.Runtime.CreateSession(ctx, durable.CreateSession{
-		SessionID:  durable.SessionID(sessionID),
+	_, err = env.Runtime.CreateSession(ctx, session.CreateSession{
+		SessionID:  session.SessionID(sessionID),
 		MCPServers: sess.mcpServers,
 	})
-	if err != nil && !errors.Is(err, durable.ErrSessionExists) {
+	if err != nil && !errors.Is(err, session.ErrSessionExists) {
 		return nil, err
 	}
 	return map[string]any{
@@ -251,7 +251,7 @@ type turnRequest struct {
 	UserMessage *tacklr.Message
 	Responses   map[string]json.RawMessage
 	MCPServers  []mcp.MCPConfig
-	Auth        durable.AuthContext
+	Auth        session.AuthContext
 }
 
 func (p *acpProtocol) bindTurn(ctx context.Context, env server.ProtocolEnv, pr *parsedRequest) (turnRequest, error) {
@@ -305,7 +305,7 @@ func (p *acpProtocol) closeSession(ctx context.Context, env server.ProtocolEnv, 
 	if err := p.wire.Delete(ctx, sessionID); err != nil {
 		return err
 	}
-	_ = env.Runtime.Close(ctx, durable.SessionID(sessionID))
+	_ = env.Runtime.Close(ctx, session.SessionID(sessionID))
 	return nil
 }
 

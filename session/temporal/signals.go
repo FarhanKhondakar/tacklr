@@ -3,15 +3,15 @@ package temporal
 import (
 	"time"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/mcp"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 const (
-	signalPrompt = durable.WakePrompt
-	signalResume = durable.WakeResume
-	signalCancel = durable.WakeCancel
-	signalClose  = durable.WakeClose
+	signalPrompt = session.WakePrompt
+	signalResume = session.WakeResume
+	signalCancel = session.WakeCancel
+	signalClose  = session.WakeClose
 
 	queryStatus   = "tacklr_status"
 	queryChildren = "tacklr_children"
@@ -25,9 +25,9 @@ const (
 // Credentials live in SecretStorage. userState seed merges into the
 // checkpoint on the first activity save.
 type workflowInput struct {
-	SessionID  durable.SessionID
+	SessionID  session.SessionID
 	MCPServers []mcp.MCPConfig
-	Mounts     []durable.MountRecipe
+	Mounts     []session.MountRecipe
 	// TurnLocalityTimeout, when > 0, pins the turn's activities to one worker
 	// (Temporal CreateSession). Zero skips worker sessions: activities can run
 	// on any worker. There is no default timeout.
@@ -42,7 +42,7 @@ type workflowInput struct {
 	ActivityAttempts int32
 	// Prompt, when set, runs one turn then completes the workflow (spawn_specialist child).
 	Prompt     string
-	Parent     durable.SessionID
+	Parent     session.SessionID
 	Specialist string
 	Worker     string
 	// State is CreateSession.State, already JSON-roundtripped. Overlay onto

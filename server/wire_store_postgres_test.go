@@ -89,8 +89,8 @@ func TestPostgresWireStore_acpLoadAfterRestart(t *testing.T) {
 	wire := server.NewPostgresWireStore(conn, "acp")
 
 	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
-		})
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
+	})
 
 	r1 := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	s1 := newACPTestServerWithWire(t, r1, wire)

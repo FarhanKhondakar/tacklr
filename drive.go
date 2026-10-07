@@ -4,13 +4,13 @@ import (
 	"context"
 )
 
-// InferenceStep is the result of one model invocation for the durable driver.
+// InferenceStep is the result of one model invocation for the session driver.
 type InferenceStep struct {
 	ToolCalls []ToolCall
 	Complete  bool
 }
 
-// ToolStep is the result of one tool invocation for the durable driver.
+// ToolStep is the result of one tool invocation for the session driver.
 // Interrupted means the tool parked; the driver must persist, publish yield,
 // and wait for Resume. AwaitJobID means the tool is still open: the session
 // loop waits for that child session, then RecordToolResult.
@@ -21,13 +21,13 @@ type ToolStep struct {
 	AwaitJobID    string
 }
 
-// TurnState is per-slice counters for the durable inference loop.
+// TurnState is per-slice counters for the session inference loop.
 type TurnState struct {
 	ModelRequests int
 	HadToolRound  bool
 }
 
-// Engine is the durable-runtime view of a TurnManager.
+// Engine is the session-runtime view of a TurnManager.
 type Engine interface {
 	AbsorbUser(ctx context.Context, user *Message, out chan StreamEvent) error
 	PendingToolCalls() []ToolCall

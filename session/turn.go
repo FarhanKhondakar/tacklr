@@ -1,4 +1,4 @@
-package durable
+package session
 
 import (
 	"context"
@@ -125,7 +125,7 @@ type Turn struct {
 }
 
 // Run drives one turn. user is the prompt. resume is set when continuing a park.
-func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resume map[string][]byte, auth AuthContext, extra map[string]any) {
+func (t *Turn) Run(step Step, sig Mailbox, ledger Ledger, user *tacklr.Message, resume map[string][]byte, auth AuthContext, extra map[string]any) {
 	if len(resume) == 0 {
 		t.HadTools = false
 		t.Requests = 0
@@ -146,7 +146,7 @@ func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resu
 			Specialist: t.Specialist,
 			Worker:     t.Worker,
 			Parent:     t.Parent,
-			Children:   jobs.IDs(),
+			Children:   ledger.IDs(),
 			Mounts:     t.Mounts,
 		}
 	}
@@ -161,7 +161,7 @@ func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resu
 			msg = context.Canceled.Error()
 			t.Inbox = nil
 			t.NextMCP = nil
-			jobs.CancelAll()
+			ledger.CancelAll()
 		}
 		step.Emit(tacklr.StreamEvent{Type: tacklr.StreamEventError, Fail: msg, Content: msg})
 	}
@@ -203,7 +203,7 @@ func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resu
 				inferComplete = false
 			}
 		}
-		switch tacklr.Next(len(toolCalls), t.Parked, inferComplete, len(jobs.IDs()) > 0) {
+		switch tacklr.Next(len(toolCalls), t.Parked, inferComplete, len(ledger.IDs()) > 0) {
 		case tacklr.ActionInfer:
 			out, err := step.Infer(InferenceInput{
 				SessionID:     t.SessionID,
@@ -245,12 +245,12 @@ func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resu
 				fail(err)
 				return
 			}
-			if err := jobs.Start(tout); err != nil {
+			if err := ledger.Start(tout); err != nil {
 				fail(err)
 				return
 			}
 			if tout.AwaitID != "" {
-				output, err := jobs.Await(tout.AwaitID)
+				output, err := ledger.Await(tout.AwaitID)
 				if err != nil {
 					fail(err)
 					return
@@ -292,7 +292,7 @@ func (t *Turn) Run(step Step, sig Signals, jobs Jobs, user *tacklr.Message, resu
 			return
 		case tacklr.ActionWait:
 			t.Inbox = append(t.Inbox, sig.Ready()...)
-			if len(t.Inbox) > 0 || len(jobs.IDs()) == 0 {
+			if len(t.Inbox) > 0 || len(ledger.IDs()) == 0 {
 				break
 			}
 			switch w := sig.Wait(); w.Kind {

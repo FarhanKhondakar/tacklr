@@ -4,12 +4,12 @@ import (
 	"testing"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 // AssertStatusMatchesEvent checks Runtime.Status against a turn-finished stream
 // event. complete → SessionComplete, error → SessionFailed, yield → running+Waiting.
-func AssertStatusMatchesEvent(t testing.TB, rt durable.Runtime, id durable.SessionID, ev tacklr.StreamEvent) {
+func AssertStatusMatchesEvent(t testing.TB, rt session.Runtime, id session.SessionID, ev tacklr.StreamEvent) {
 	t.Helper()
 	switch ev.Type {
 	case tacklr.StreamEventComplete, tacklr.StreamEventError, tacklr.StreamEventInterrupt:
@@ -22,15 +22,15 @@ func AssertStatusMatchesEvent(t testing.TB, rt durable.Runtime, id durable.Sessi
 	}
 	switch ev.Type {
 	case tacklr.StreamEventComplete:
-		if st.State != durable.SessionComplete {
+		if st.State != session.SessionComplete {
 			t.Fatalf("complete event but Status %+v", st)
 		}
 	case tacklr.StreamEventError:
-		if st.State != durable.SessionFailed {
+		if st.State != session.SessionFailed {
 			t.Fatalf("error event but Status %+v", st)
 		}
 	case tacklr.StreamEventInterrupt:
-		if st.State != durable.SessionRunning || !st.Waiting {
+		if st.State != session.SessionRunning || !st.Waiting {
 			t.Fatalf("yield event but Status %+v", st)
 		}
 	}

@@ -97,7 +97,7 @@ type AgentOptions struct {
 }
 
 // NewTurnManager builds a TurnManager for one turn slice.
-// Durable runtimes call this; hosts use durable.Runtime.
+// Durable runtimes call this; hosts use session.Runtime.
 func NewTurnManager(ctx context.Context, opts AgentOptions) (*TurnManager, error) {
 	if err := opts.Validate(); err != nil {
 		return nil, err

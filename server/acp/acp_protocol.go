@@ -16,9 +16,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/interrupt"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 const (
@@ -195,7 +195,7 @@ func (p *acpProtocol) handleNotification(ctx context.Context, env server.Protoco
 		return
 	}
 	if _, err := p.resolveOwnedWireSession(ctx, env, pr.ThreadID, actionSessionPrompt); err == nil {
-		_ = env.Runtime.Cancel(ctx, durable.SessionID(pr.ThreadID))
+		_ = env.Runtime.Cancel(ctx, session.SessionID(pr.ThreadID))
 	}
 }
 
@@ -233,7 +233,7 @@ func (p *acpProtocol) dispatch(ctx context.Context, env server.ProtocolEnv, pr *
 		if _, err := p.resolveOwnedWireSession(ctx, env, pr.ThreadID, actionSessionPrompt); err != nil {
 			return nil, err
 		}
-		_ = env.Runtime.Cancel(ctx, durable.SessionID(pr.ThreadID))
+		_ = env.Runtime.Cancel(ctx, session.SessionID(pr.ThreadID))
 		return map[string]any{}, nil
 	case methodVFSBind:
 		return p.handleVFSBind(ctx, env, pr)
@@ -302,14 +302,14 @@ func (p *acpProtocol) handleSessionTurn(ctx context.Context, env server.Protocol
 	if err != nil {
 		return reply(env.Conn.Writer, pr.ID, nil, err)
 	}
-	turn := server.PromptOrResume{Prompt: durable.Prompt{
+	turn := server.PromptOrResume{Prompt: session.Prompt{
 		Text:        req.Prompt,
 		UserMessage: req.UserMessage,
 		MCPServers:  req.MCPServers,
 		Auth:        req.Auth,
 	}}
 	if len(req.Responses) > 0 {
-		resume := &durable.Resume{Auth: req.Auth, Responses: make(map[string][]byte, len(req.Responses))}
+		resume := &session.Resume{Auth: req.Auth, Responses: make(map[string][]byte, len(req.Responses))}
 		for id, payload := range req.Responses {
 			resume.Responses[id] = []byte(payload)
 		}

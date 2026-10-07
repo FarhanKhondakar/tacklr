@@ -27,7 +27,7 @@ The **agent file catalog** is collapsed. Discovery (`find_files`, `find_content`
          → MountSession (injected; closed with the turn)
               → providers (local / S3 / brain)     persist immediately
               → FuseMount (read-only kernel tree)  HostDir = cwd for run_command
-    → durable.Runtime
+    → session.Runtime
          Prompt/Resume.Auth    work-item tokens + bindings (next turn)
          SecretStorage         Temporal: those tokens (not history, not snapshot)
          Snapshot.Mounts       secret-free recipes (source ids, no bytes)
@@ -60,7 +60,7 @@ The **agent file catalog** is collapsed. Discovery (`find_files`, `find_content`
 | Zero FUSE TTLs; single-segment reject; `HostDir`; `FuseAvailable`; `ErrFuseNotMounted` | `vfs/fuse_node.go`, `vfs/errors.go` |
 | Kernel identity smoke (skip without device) | `vfs/fuse_test.go` |
 | `VFSProjection` / `FuseProjection` / `DirectProjection` | `server/projection.go` |
-| FUSE attach; fail-hard on device + mount fail; skip remount if `HostDir` set | `OpenTurnVFS` in `durable/internal/vfs.go` |
+| FUSE attach; fail-hard on device + mount fail; skip remount if `HostDir` set | `OpenTurnVFS` in `session/internal/vfs.go` |
 | Turn-scoped mounts; TurnManager Close does not unmount | `openTurnVFS`, `EventStream.Close`, `TurnManager.Close` |
 | host `/workspace/work` | `OpenVFS` `At("work", Local(jail))` |
 | host skills packs | `OpenSkills` (host-only Tree; not on the agent `/workspace`) |
@@ -266,7 +266,7 @@ Each PR is independently reviewable. Do not combine Phase 3 removal with the `wr
 - `vfs/fuse_test.go` — kernel identity smoke
 - `vfs/document_session.go` — write-through `WriteDocument`
 - `server/projection.go` — `VFSProjection`
-- `durable/internal/vfs.go` — `OpenTurnVFS`, `CloseTurnVFS`
+- `session/internal/vfs.go` — `OpenTurnVFS`, `CloseTurnVFS`
 - `tools_vfs.go` — `read`, `write`, `run_command`
 - `tools_vfsindex.go` — `index_file` / `unindex` / `find_content` (until PR A)
 - `agent.go` — turn-scoped `Close` (does not close MountSession)

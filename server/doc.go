@@ -1,4 +1,4 @@
-// Package server serves a durable.Runtime over host-defined wire protocols.
+// Package server serves a session.Runtime over host-defined wire protocols.
 //
 // Protocol is the extension point. Implement it to own HTTP routes and WebSocket,
 // stream framing, and HITL resume. The ACP built-in is package server/acp.
@@ -11,6 +11,6 @@
 // does not ship that program. A protocol asks it through Conn.Ask.
 //
 // RunTurn pumps Runtime.Prompt/Resume/Subscribe through Protocol.OnStreamEvent
-// and OnStreamClosed. Map wire credentials into durable.AuthContext on the work
+// and OnStreamClosed. Map wire credentials into session.AuthContext on the work
 // item. Runtime, harness, VFS, and Temporal do not import this package.
 package server

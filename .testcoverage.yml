@@ -24,10 +24,8 @@ override:
     threshold: 100
   - path: github.com/ryanaldo34/tacklr/server$
     threshold: 95
-  - path: github.com/ryanaldo34/tacklr/durable/internal$
+  - path: github.com/ryanaldo34/tacklr/session/internal$
     threshold: 95
-  - path: github.com/ryanaldo34/tacklr/durable/inprocess$
-    threshold: 90
   - path: github.com/ryanaldo34/tacklr/builtins$
     threshold: 90
   - path: github.com/ryanaldo34/tacklr/interrupt$

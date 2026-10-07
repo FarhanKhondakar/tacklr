@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/server"
+	"github.com/ryanaldo34/tacklr/session"
 
 	"github.com/ryanaldo34/tacklr"
 )
@@ -516,5 +516,5 @@ type parsedRequest struct {
 	// Extensibility — raw _meta blob for custom fields
 	Meta json.RawMessage
 
-	Auth durable.AuthContext
+	Auth session.AuthContext
 }
