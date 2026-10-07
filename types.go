@@ -38,6 +38,25 @@ var (
 	ErrToolPermissionDenied = errors.New("tool permission denied")
 )
 
+// ErrNetwork is a transport failure: the dial, the read, a timeout, or an
+// upstream 408, 429, or 5xx. Wrap it at the call that hit the network.
+// Activities retry this error. Any other error stops on the first attempt.
+var ErrNetwork = errors.New("network")
+
+type networkError struct{ error }
+
+func (e networkError) Unwrap() error { return e.error }
+
+func (e networkError) Is(target error) bool { return target == ErrNetwork }
+
+// Network marks err as a transport failure. The text stays err.Error().
+func Network(err error) error {
+	if err == nil || errors.Is(err, ErrNetwork) {
+		return err
+	}
+	return networkError{err}
+}
+
 // ProviderStatus supplies HTTP status and error code from a provider error.
 // Optional on InferenceStrategy errors for model-span attributes.
 type ProviderStatus interface {

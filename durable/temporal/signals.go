@@ -38,7 +38,8 @@ type workflowInput struct {
 	ActivityTimeout time.Duration
 	// HeartbeatTimeout is the activity heartbeat timeout. Zero means 30 seconds.
 	HeartbeatTimeout time.Duration
-	// ActivityAttempts is Temporal MaximumAttempts. Zero means 3.
+	// ActivityAttempts is Temporal MaximumAttempts for a wrapped network
+	// error, a model refusal, or a stale checkpoint. Zero means 3.
 	ActivityAttempts int32
 	// Prompt, when set, runs one turn then completes the workflow (spawn_specialist child).
 	Prompt     string

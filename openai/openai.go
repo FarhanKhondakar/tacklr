@@ -190,13 +190,13 @@ func (s *OpenAIInferenceStrategy) CountTokens(ctx context.Context, messages []*t
 
 	httpResp, err := s.httpClient.Do(httpReq)
 	if err != nil {
-		return 0, fmt.Errorf("token-count request failed: %w", err)
+		return 0, tacklr.Network(fmt.Errorf("token-count request failed: %w", err))
 	}
 	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("read response: %w", err)
+		return 0, tacklr.Network(fmt.Errorf("read response: %w", err))
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
@@ -211,7 +211,7 @@ func (s *OpenAIInferenceStrategy) CountTokens(ctx context.Context, messages []*t
 			}
 			return len(tke.Encode(strings.Join(contents, "\n"), nil, nil)), nil
 		}
-		return 0, &APIStatusError{Status: httpResp.StatusCode, Body: extractErrorMessage(respBody)}
+		return 0, classifyAPIStatus(&APIStatusError{Status: httpResp.StatusCode, Body: extractErrorMessage(respBody)}, "")
 	}
 
 	var countResp struct {
@@ -317,7 +317,7 @@ func (s *OpenAIInferenceStrategy) Invoke(ctx context.Context, messages []*tacklr
 
 		httpResp, err := s.httpClient.Do(httpReq)
 		if err != nil {
-			err = fmt.Errorf("model provider request failed: %w", err)
+			err = tacklr.Network(fmt.Errorf("model provider request failed: %w", err))
 			slog.ErrorContext(ctx, "model provider request failed", "error", err)
 			// Surface transport failures as stream errors (no silent channel close).
 			sendErr(err)
@@ -480,11 +480,11 @@ func (s *OpenAIInferenceStrategy) parseSSEResponse(ctx context.Context, body io.
 		return
 	}
 	if err := scanner.Err(); err != nil {
-		emitFailure(fmt.Errorf("%w: %w", ErrIncompleteStream, err), "")
+		emitFailure(tacklr.Network(fmt.Errorf("%w: %w", ErrIncompleteStream, err)), "")
 		return
 	}
 	if !terminal {
-		emitFailure(ErrIncompleteStream, "provider stream closed before a terminal response event")
+		emitFailure(tacklr.Network(ErrIncompleteStream), "provider stream closed before a terminal response event")
 	}
 }
 

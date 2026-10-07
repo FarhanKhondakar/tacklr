@@ -88,7 +88,7 @@ rt := tacklrtemporal.New(c, cfg)
 | Turn locality | `Config.TurnLocality` keeps the turn’s activities on one Temporal worker. Zero (default) does not pin them. |
 | Activity timeout | `Config.ActivityTimeout` is StartToCloseTimeout for Inference/Tool. Zero is 10 minutes. |
 | Heartbeat | `Config.HeartbeatTimeout`. Zero is 30 seconds. |
-| Activity retries | `Config.ActivityAttempts` is Temporal MaximumAttempts. Zero is 3. 1 means no retry. |
+| Activity retries | `Config.ActivityAttempts` is Temporal MaximumAttempts. Zero is 3. 1 means no retry. An activity retries `tacklr.ErrNetwork` (wrap a dial, read, timeout, or upstream 408/429/5xx at the call), a model refusal, and a stale checkpoint. Any other error stops on the first attempt. |
 | Progress | Workflow Streams (`events`, `retry`, `close`) |
 | HITL | Signal `Resume` (never inside an activity) |
 | Leftover tools after HITL | Workflow variable (`rest`) replayed from history; not SnapshotStore |
@@ -163,7 +163,7 @@ Recipes are cached on the session snapshot (`Snapshot.Mounts`): where a mount ca
 
 After HITL or a worker restart, the next Prompt/Resume supplies tokens and they are Put again. A retry on another worker remounts only if that worker can `Get` the same store.
 
-A 401 during a turn ends the activity. The client (or host) `Resume`s with a new token. There is no live callback from an activity into ACP.
+A 401 during a turn fails that activity on the first attempt. The host sends a new token on the next `Prompt` or `Resume`. There is no live callback from an activity into ACP.
 
 MCP `Env`/`Headers` are stripped with `DurableConfigs` before Temporal payloads. `CredentialRef` stays and is resolved at activity time.
 

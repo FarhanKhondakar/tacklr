@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -37,11 +38,24 @@ func cancelLiveTurn(id durable.SessionID) {
 	}
 }
 
-func canceledIf(ctx context.Context, err error) error {
-	if err := ctx.Err(); err != nil {
+// activityError is what an activity returns. Cancel is not a failure.
+// A wrapped network error is retried. So is a model refusal (a content filter
+// often clears on the next attempt) and a stale checkpoint (reload and save).
+// Everything else stops on the first attempt.
+func activityError(ctx context.Context, err error) error {
+	if err == nil || temporal.IsCanceledError(err) {
+		return err
+	}
+	if (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) || errors.Is(err, context.Canceled) {
+		if ctx != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return temporal.NewCanceledError(err.Error())
 	}
-	return err
+	if errors.Is(err, tacklr.ErrNetwork) || errors.Is(err, tacklr.ErrModelRefused) || errors.Is(err, durable.ErrStaleCheckpoint) {
+		return err
+	}
+	return temporal.NewNonRetryableApplicationError(err.Error(), "", err)
 }
 
 // activities are the Inference and Tool bodies registered on the worker.
@@ -147,7 +161,7 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 			pub = err
 		}
 		slog.ErrorContext(ctx, "inference harness", "area", telemetry.AreaRuntime, "error", pub)
-		return inferenceOutput{}, canceledIf(ctx, err)
+		return inferenceOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -158,11 +172,11 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 	defer stop()
 	if len(in.Resume) > 0 {
 		if err := eng.ApplyResume(in.Resume); err != nil {
-			return inferenceOutput{}, canceledIf(ctx, err)
+			return inferenceOutput{}, activityError(ctx, err)
 		}
 		if pending := eng.PendingToolCalls(); len(pending) > 0 {
 			_, err = a.save(ctx, in.SessionID, h, rev, in.Rec)
-			return inferenceOutput{ToolCalls: pending}, err
+			return inferenceOutput{ToolCalls: pending}, activityError(ctx, err)
 		}
 	}
 	extra := in.Extra
@@ -171,7 +185,7 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 	}
 	if _, err := adapter.AbsorbAll(ctx, eng.AbsorbUser, extra, out); err != nil {
 		slog.ErrorContext(ctx, "inference absorb", "area", telemetry.AreaRuntime, "error", err)
-		return inferenceOutput{}, canceledIf(ctx, err)
+		return inferenceOutput{}, activityError(ctx, err)
 	}
 	st := &tacklr.TurnState{HadToolRound: in.HadToolRound, ModelRequests: in.ModelRequests}
 	step, err := eng.RunInference(ctx, st, out)
@@ -181,11 +195,11 @@ func (a *activities) Inference(ctx context.Context, in inferenceInput) (inferenc
 		} else {
 			slog.ErrorContext(ctx, "inference failed", "area", telemetry.AreaRuntime, "error", err)
 		}
-		return inferenceOutput{}, canceledIf(ctx, err)
+		return inferenceOutput{}, activityError(ctx, err)
 	}
 	if _, err = a.save(ctx, in.SessionID, h, rev, in.Rec); err != nil {
 		slog.ErrorContext(ctx, "inference persist", "area", telemetry.AreaRuntime, "error", err)
-		return inferenceOutput{}, err
+		return inferenceOutput{}, activityError(ctx, err)
 	}
 	result := ""
 	if step.Complete {
@@ -229,7 +243,7 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
 		slog.ErrorContext(ctx, "tool harness", "area", telemetry.AreaHarness, "error", err)
-		return toolOutput{}, err
+		return toolOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -250,7 +264,7 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 	if runErr != nil {
 		if err := ctx.Err(); err != nil {
 			slog.WarnContext(ctx, "tool cancelled", "area", telemetry.AreaHarness, "tool", in.Call.Name)
-			return toolOutput{}, canceledIf(ctx, runErr)
+			return toolOutput{}, activityError(ctx, runErr)
 		}
 		slog.ErrorContext(ctx, "tool failed", "area", telemetry.AreaHarness, "tool", in.Call.Name, "error", runErr)
 	}
@@ -258,9 +272,9 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 	if saveErr != nil {
 		slog.ErrorContext(ctx, "tool persist", "area", telemetry.AreaHarness, "error", saveErr)
 		if runErr != nil {
-			return toolOutput{}, fmt.Errorf("tool: %w: persist: %w", runErr, saveErr)
+			saveErr = fmt.Errorf("tool: %w: persist: %w", runErr, saveErr)
 		}
-		return toolOutput{}, saveErr
+		return toolOutput{}, activityError(ctx, saveErr)
 	}
 	status := "success"
 	if step.Interrupted {
@@ -287,19 +301,20 @@ func (a *activities) Tool(ctx context.Context, in toolInput) (toolOutput, error)
 
 func (a *activities) RunJob(ctx context.Context, in runJobInput) (string, error) {
 	if a.Jobs == nil {
-		return "", fmt.Errorf("%w: %s", tacklr.ErrNotFound, in.Name)
+		return "", activityError(ctx, fmt.Errorf("%w: %s", tacklr.ErrNotFound, in.Name))
 	}
 	fn, ok := a.Jobs[in.Name]
 	if !ok {
-		return "", fmt.Errorf("%w: %s", tacklr.ErrNotFound, in.Name)
+		return "", activityError(ctx, fmt.Errorf("%w: %s", tacklr.ErrNotFound, in.Name))
 	}
-	return fn(ctx, in.Task)
+	out, err := fn(ctx, in.Task)
+	return out, activityError(ctx, err)
 }
 
 func (a *activities) CommitToolOutput(ctx context.Context, in commitToolInput) (toolOutput, error) {
 	h, ms, skillsMS, rev, err := a.harness(ctx, in.SessionID, in.Rec, in.MCPServers, in.State)
 	if err != nil {
-		return toolOutput{}, err
+		return toolOutput{}, activityError(ctx, err)
 	}
 	defer func() {
 		h.Close()
@@ -307,7 +322,7 @@ func (a *activities) CommitToolOutput(ctx context.Context, in commitToolInput) (
 	}()
 	h.Drive().RecordToolResult(in.Call, in.Output)
 	if _, err = a.save(ctx, in.SessionID, h, rev, in.Rec); err != nil {
-		return toolOutput{}, err
+		return toolOutput{}, activityError(ctx, err)
 	}
 	presented := in.Call
 	presented.Status = "success"
@@ -421,7 +436,7 @@ type emitEventInput struct {
 func (a *activities) EmitEvent(ctx context.Context, in emitEventInput) error {
 	stream := a.openStream(ctx)
 	defer closeStream(ctx, stream)
-	return a.publish(ctx, stream, in.SessionID, durable.TopicEvents, in.Event, true)
+	return activityError(ctx, a.publish(ctx, stream, in.SessionID, durable.TopicEvents, in.Event, true))
 }
 
 func startHeartbeat(ctx context.Context) func() {

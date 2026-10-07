@@ -123,7 +123,7 @@ func SessionWorkflow(ctx workflow.Context, in workflowInput) (string, error) {
 		err := workflow.ExecuteActivity(actCtx, "RunJob", runJobInput{Name: in.Worker, Task: task}).Get(ctx, &out)
 		if err != nil {
 			terminal = durable.SessionFailed
-			msg := err.Error()
+			msg := failureText(err)
 			result = msg
 			_ = workflow.ExecuteActivity(actCtx, "EmitEvent", emitEventInput{
 				SessionID: in.SessionID,
@@ -223,7 +223,7 @@ func SessionWorkflow(ctx workflow.Context, in workflowInput) (string, error) {
 			if err == nil {
 				return false
 			}
-			msg := err.Error()
+			msg := failureText(err)
 			if turnCanceled(ctx, err) {
 				outcome = telemetry.OutcomeCancelled
 				terminal = durable.SessionFailed
@@ -582,6 +582,21 @@ func waitSession(
 			return out
 		}
 	}
+}
+
+// failureText reads ApplicationError.Message. Error() appends the cause,
+// which repeats the same text.
+func failureText(err error) string {
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		if msg := app.Message(); msg != "" {
+			return msg
+		}
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func turnCanceled(ctx workflow.Context, err error) bool {

@@ -93,6 +93,9 @@ func classifyAPIStatus(apiErr *APIStatusError, errType string) error {
 	if isMaxTokensSignal(lower) {
 		return fmt.Errorf("%w: %w", tacklr.ErrMaxTokens, apiErr)
 	}
+	if apiErr.Status == http.StatusRequestTimeout || apiErr.Status == http.StatusTooManyRequests || apiErr.Status >= 500 {
+		return tacklr.Network(apiErr)
+	}
 	return apiErr
 }
 

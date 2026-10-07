@@ -38,8 +38,12 @@ func TestClassifyProviderFailure_unmapped(t *testing.T) {
 		t.Fatalf("should not map overload: %v", err)
 	}
 	var api *APIStatusError
-	if !errors.As(err, &api) || api.Status != 500 {
+	if !errors.As(err, &api) || api.Status != 500 || !errors.Is(err, tacklr.ErrNetwork) {
 		t.Fatalf("err = %v", err)
+	}
+	bad := classifyProviderFailure(400, []byte(`{"error":{"message":"unknown model"}}`))
+	if errors.Is(bad, tacklr.ErrNetwork) {
+		t.Fatalf("400 is not a transport failure: %v", bad)
 	}
 }
 

@@ -77,10 +77,14 @@ func TestSessionWorkflow_inferenceRefusedFailsTurn(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.SetWorkerOptions(worker.Options{EnableSessionWorker: true})
+	var attempts atomic.Int32
 	cat := durable.NewCatalog("default")
 	cat.Register("default", durable.AgentSpec{
 		Options: tacklr.AgentOptions{
-			Model:  &testkit.ScriptedModel{InvokeErr: tacklr.ErrModelRefused},
+			Model: &testkit.ScriptedModel{InvokeErrFn: func(context.Context, []*tacklr.Message, []*tacklr.Tool) error {
+				attempts.Add(1)
+				return tacklr.ErrModelRefused
+			}},
 			Config: tacklr.Config{MaxWindowSize: 8192},
 		},
 	})
@@ -96,9 +100,12 @@ func TestSessionWorkflow_inferenceRefusedFailsTurn(t *testing.T) {
 		env.SignalWorkflow(signalClose, nil)
 	}, 50*time.Millisecond)
 
-	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id, AgentID: "default"})
+	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id, AgentID: "default", ActivityAttempts: 3})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
+	}
+	if n := attempts.Load(); n != 3 {
+		t.Fatalf("refusal attempts = %d, want 3", n)
 	}
 	st := querySession(t, env)
 	if st.State != durable.SessionFailed || st.Waiting {
@@ -117,6 +124,58 @@ func TestSessionWorkflow_inferenceRefusedFailsTurn(t *testing.T) {
 	}
 }
 
+func TestSessionWorkflow_permanentInferenceDoesNotRetry(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetWorkerOptions(worker.Options{EnableSessionWorker: true})
+	var attempts atomic.Int32
+	cat := durable.NewCatalog("default")
+	cat.Register("default", durable.AgentSpec{
+		Options: tacklr.AgentOptions{
+			Model: &testkit.ScriptedModel{InvokeErrFn: func(context.Context, []*tacklr.Message, []*tacklr.Tool) error {
+				attempts.Add(1)
+				return tacklr.ErrApiKeyNotSet
+			}},
+			Config: tacklr.Config{MaxWindowSize: 8192},
+		},
+	})
+	fallback := inprocess.NewMemoryEventLog()
+	env.RegisterWorkflow(SessionWorkflow)
+	env.RegisterActivity(newActs(cat, fallback, true))
+
+	id := durable.SessionID("sess-permanent")
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(signalPrompt, promptSignal{Text: "hi"})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(signalClose, nil)
+	}, 50*time.Millisecond)
+
+	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id, AgentID: "default", ActivityAttempts: 5})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if n := attempts.Load(); n != 1 {
+		t.Fatalf("permanent attempts = %d, want 1", n)
+	}
+	st := querySession(t, env)
+	if st.State != durable.SessionFailed || st.Waiting {
+		t.Fatalf("status %+v", st)
+	}
+	var saw bool
+	for _, ev := range drainLog(t, fallback, id) {
+		if ev.Type == tacklr.StreamEventError && strings.Contains(ev.Fail, tacklr.ErrApiKeyNotSet.Error()) {
+			saw = true
+			if strings.Count(ev.Fail, tacklr.ErrApiKeyNotSet.Error()) != 1 {
+				t.Fatalf("failure text repeated: %q", ev.Fail)
+			}
+		}
+	}
+	if !saw {
+		t.Fatal("want StreamEventError with api key not set")
+	}
+}
+
 func TestSessionWorkflow_activityRetryThenCompletes(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -125,7 +184,7 @@ func TestSessionWorkflow_activityRetryThenCompletes(t *testing.T) {
 	model := &testkit.ScriptedModel{
 		InvokeErrFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool) error {
 			if attempts.Add(1) == 1 {
-				return errors.New("transient")
+				return tacklr.Network(errors.New("transient"))
 			}
 			return nil
 		},

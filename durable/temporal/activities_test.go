@@ -3,9 +3,12 @@ package temporal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/ryanaldo34/tacklr"
 	"github.com/ryanaldo34/tacklr/durable"
@@ -100,5 +103,129 @@ func TestActivities_childTurnUsesParentSecrets(t *testing.T) {
 	}
 	if gotToken != "parent-tok" {
 		t.Fatalf("OpenVFS token=%q", gotToken)
+	}
+}
+
+func TestActivityError_splitsRetry(t *testing.T) {
+	ctx := t.Context()
+	if err := activityError(ctx, nil); err != nil {
+		t.Fatalf("nil: %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := activityError(canceled, tacklr.ErrMaxTokens); !temporal.IsCanceledError(err) {
+		t.Fatalf("cancel: %v", err)
+	}
+	deadline, stop := context.WithTimeout(ctx, 0)
+	defer stop()
+	<-deadline.Done()
+	got := activityError(deadline, context.DeadlineExceeded)
+	var deadApp *temporal.ApplicationError
+	if temporal.IsCanceledError(got) || !errors.As(got, &deadApp) || !deadApp.NonRetryable() {
+		t.Fatalf("deadline: %v", got)
+	}
+
+	permanent := []error{
+		tacklr.ErrApiKeyNotSet,
+		tacklr.ErrMaxTokens,
+		errors.New("connection reset"),
+	}
+	for _, src := range permanent {
+		err := activityError(ctx, src)
+		var app *temporal.ApplicationError
+		if !errors.As(err, &app) || !app.NonRetryable() || !errors.Is(err, src) {
+			t.Fatalf("stop %v → %v", src, err)
+		}
+	}
+
+	retryable := []error{
+		tacklr.Network(errors.New("connection reset")),
+		tacklr.ErrModelRefused,
+		fmt.Errorf("%w: %w", tacklr.ErrModelAfterTools, tacklr.ErrModelRefused),
+		durable.ErrStaleCheckpoint,
+		fmt.Errorf("save: %w: %w", durable.ErrStaleCheckpoint, tacklr.ErrInvalid),
+	}
+	for _, src := range retryable {
+		err := activityError(ctx, src)
+		var app *temporal.ApplicationError
+		if errors.As(err, &app) && app.NonRetryable() {
+			t.Fatalf("retryable marked permanent: %v", err)
+		}
+		if !errors.Is(err, src) && err.Error() != src.Error() {
+			t.Fatalf("retryable %v → %v", src, err)
+		}
+	}
+}
+
+type saveErrStore struct {
+	durable.SnapshotStore
+	err error
+}
+
+func (s saveErrStore) Save(context.Context, durable.SessionID, durable.Snapshot, durable.Revision) (durable.Revision, error) {
+	return "", s.err
+}
+
+func TestTool_saveErrorKeepsRetrySplit(t *testing.T) {
+	cat := durable.NewCatalog("default")
+	cat.Register("default", durable.AgentSpec{
+		Options: tacklr.AgentOptions{
+			Model:  &testkit.ScriptedModel{},
+			Config: tacklr.Config{MaxWindowSize: 8192},
+			Tools: []*tacklr.Tool{
+				tacklr.NewTool(tacklr.ToolConfig{
+					Name: "boom",
+					Handler: func(context.Context) (string, error) {
+						return "", tacklr.ErrFailed
+					},
+				}),
+			},
+		},
+	})
+	snaps := inprocess.NewMemorySnapshot()
+	acts := &activities{
+		Catalog: cat, Snapshots: saveErrStore{SnapshotStore: snaps, err: tacklr.Network(errors.New("db down"))},
+		Fallback: inprocess.NewMemoryEventLog(), DisableStreams: true,
+		Secrets: durable.NewMemorySecretStorage(),
+	}
+	_, err := acts.Tool(t.Context(), toolInput{
+		SessionID: "s",
+		Rec:       durable.Snapshot{AgentID: "default"},
+		Call:      tacklr.ToolCall{ID: "c", Name: "boom", Arguments: "{}"},
+	})
+	var app *temporal.ApplicationError
+	if err == nil || (errors.As(err, &app) && app.NonRetryable()) || !errors.Is(err, tacklr.ErrFailed) {
+		t.Fatalf("retryable persist: %v", err)
+	}
+
+	acts.Snapshots = saveErrStore{SnapshotStore: snaps, err: tacklr.ErrNotFound}
+	_, err = acts.Tool(t.Context(), toolInput{
+		SessionID: "s",
+		Rec:       durable.Snapshot{AgentID: "default"},
+		Call:      tacklr.ToolCall{ID: "c2", Name: "boom", Arguments: "{}"},
+	})
+	if !errors.As(err, &app) || !app.NonRetryable() || !errors.Is(err, tacklr.ErrNotFound) {
+		t.Fatalf("permanent persist: %v", err)
+	}
+}
+
+func TestRunJob_missingIsPermanent(t *testing.T) {
+	acts := &activities{Secrets: durable.NewMemorySecretStorage()}
+	_, err := acts.RunJob(t.Context(), runJobInput{Name: "missing"})
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || !app.NonRetryable() || !errors.Is(err, tacklr.ErrNotFound) {
+		t.Fatalf("nil jobs: %v", err)
+	}
+	acts.Jobs = map[string]durable.JobHandler{}
+	_, err = acts.RunJob(t.Context(), runJobInput{Name: "missing"})
+	if !errors.As(err, &app) || !app.NonRetryable() || !errors.Is(err, tacklr.ErrNotFound) {
+		t.Fatalf("unknown job: %v", err)
+	}
+	acts.Jobs["ok"] = func(context.Context, string) (string, error) {
+		return "", tacklr.Network(errors.New("later"))
+	}
+	_, err = acts.RunJob(t.Context(), runJobInput{Name: "ok"})
+	if err == nil || !errors.Is(err, tacklr.ErrNetwork) || errors.As(err, &app) && app.NonRetryable() {
+		t.Fatalf("handler: %v", err)
 	}
 }

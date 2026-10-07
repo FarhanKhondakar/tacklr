@@ -90,7 +90,9 @@ type Config struct {
 	ActivityTimeout time.Duration
 	// HeartbeatTimeout is the activity heartbeat timeout. Zero is 30 seconds.
 	HeartbeatTimeout time.Duration
-	// ActivityAttempts is Temporal MaximumAttempts. Zero is 3. 1 means no retry.
+	// ActivityAttempts is Temporal MaximumAttempts for a wrapped network
+	// error, a model refusal, or a stale checkpoint. Zero is 3. 1 means no
+	// retry. Any other activity error stops on the first attempt.
 	ActivityAttempts int32
 	// Secrets holds work-item credentials for activities. Required. New and
 	// NewWorker must share the same instance. Tokens never enter event history.
