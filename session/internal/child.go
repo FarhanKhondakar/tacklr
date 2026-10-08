@@ -18,18 +18,6 @@ func OverlaySpecialist(parent tacklr.AgentOptions, specialist string) (tacklr.Ag
 	return tacklr.BindTurn(out, "", nil, nil), nil
 }
 
-// ChildState is the tool-facing running/completed/failed for a session.
-func ChildState(st session.SessionState) string {
-	switch st {
-	case session.SessionComplete:
-		return tacklr.JobCompleted
-	case session.SessionFailed:
-		return tacklr.JobFailed
-	default:
-		return tacklr.JobRunning
-	}
-}
-
 // NormalizeSpawn trims spawn_specialist arguments.
 // Specialist is required; empty task allowed for idempotent retry of the same callID.
 func NormalizeSpawn(specialist, task string) (string, string, error) {

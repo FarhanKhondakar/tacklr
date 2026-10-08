@@ -186,17 +186,6 @@ func (l *MemoryEventLog) Head(_ context.Context, sessionID SessionID) (Seq, erro
 	return Seq(len(s.entries)), nil
 }
 
-// EndSubscribers closes live subscribers without deleting the log (cancel).
-func (l *MemoryEventLog) EndSubscribers(sessionID SessionID) {
-	s := l.lookup(sessionID)
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.kickSubs()
-}
-
 // CloseSession implements EventLog. It drops the log so a later session
 // can reuse the id and so closed history does not stay in process memory.
 func (l *MemoryEventLog) CloseSession(_ context.Context, sessionID SessionID) error {
