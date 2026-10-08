@@ -672,24 +672,29 @@ func TestSessionWorkflow_steerDuringYieldKeepsPark(t *testing.T) {
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "ask"})
 	}, time.Millisecond)
-	env.RegisterDelayedCallback(func() {
+	var steerWhenParked func()
+	steerWhenParked = func() {
+		if !querySession(t, env).Waiting {
+			env.RegisterDelayedCallback(steerWhenParked, 15*time.Millisecond)
+			return
+		}
 		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "steer"})
-		st := querySession(t, env)
-		if !st.Waiting {
+		if !querySession(t, env).Waiting {
 			t.Error("steer must keep the park")
 		}
 		if n.Load() != 1 {
 			t.Errorf("Invoke 2 must not run before Resume, got %d", n.Load())
 		}
-	}, 20*time.Millisecond)
-	env.RegisterDelayedCallback(func() {
-		resumed.Store(true)
-		payload, _ := json.Marshal(map[string]any{"selectionIdx": 0})
-		env.SignalWorkflow(signalResume, session.ResumeIn{Responses: map[string][]byte{"ask1": payload}})
-	}, 40*time.Millisecond)
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalClose, nil)
-	}, 80*time.Millisecond)
+		env.RegisterDelayedCallback(func() {
+			resumed.Store(true)
+			payload, _ := json.Marshal(map[string]any{"selectionIdx": 0})
+			env.SignalWorkflow(signalResume, session.ResumeIn{Responses: map[string][]byte{"ask1": payload}})
+			env.RegisterDelayedCallback(func() {
+				env.SignalWorkflow(signalClose, nil)
+			}, 20*time.Millisecond)
+		}, 20*time.Millisecond)
+	}
+	env.RegisterDelayedCallback(steerWhenParked, 15*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -1116,7 +1121,12 @@ func TestSessionWorkflow_parkedParentLeavesAsyncChildRunning(t *testing.T) {
 	childID := session.ChildSessionID(id, "researcher", "sp1")
 	var sawChild bool
 	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "go"}) }, time.Millisecond)
-	env.RegisterDelayedCallback(func() {
+	var observeWhenParked func()
+	observeWhenParked = func() {
+		if !querySession(t, env).Waiting {
+			env.RegisterDelayedCallback(observeWhenParked, 15*time.Millisecond)
+			return
+		}
 		val, err := env.QueryWorkflow(queryChildren)
 		if err != nil {
 			t.Fatal(err)
@@ -1130,17 +1140,15 @@ func TestSessionWorkflow_parkedParentLeavesAsyncChildRunning(t *testing.T) {
 				sawChild = true
 			}
 		}
-		if st := querySession(t, env); !st.Waiting {
-			t.Fatalf("parent should be parked, status %+v", st)
-		}
 		once.Do(func() { close(release) })
-	}, 40*time.Millisecond)
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalResume, session.ResumeIn{
-			Responses: map[string][]byte{"ask1": []byte(`{"selectionIdx":0}`)},
-		})
-	}, 60*time.Millisecond)
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 100*time.Millisecond)
+		env.RegisterDelayedCallback(func() {
+			env.SignalWorkflow(signalResume, session.ResumeIn{
+				Responses: map[string][]byte{"ask1": []byte(`{"selectionIdx":0}`)},
+			})
+			env.RegisterDelayedCallback(func() { env.SignalWorkflow(signalClose, nil) }, 20*time.Millisecond)
+		}, 20*time.Millisecond)
+	}
+	env.RegisterDelayedCallback(observeWhenParked, 15*time.Millisecond)
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
