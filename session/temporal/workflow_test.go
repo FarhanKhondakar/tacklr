@@ -301,12 +301,20 @@ func TestSessionWorkflow_hitlCancel(t *testing.T) {
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(signalPrompt, session.PromptIn{Text: "ask"})
 	}, time.Millisecond)
-	env.RegisterDelayedCallback(func() {
+	// Cancel only after the turn has parked. A fixed delay races the tool
+	// activity under the race detector and drops the yield event.
+	var cancelWhenParked func()
+	cancelWhenParked = func() {
+		if !querySession(t, env).Waiting {
+			env.RegisterDelayedCallback(cancelWhenParked, 15*time.Millisecond)
+			return
+		}
 		env.SignalWorkflow(signalCancel, nil)
-	}, 20*time.Millisecond)
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(signalClose, nil)
-	}, 50*time.Millisecond)
+		env.RegisterDelayedCallback(func() {
+			env.SignalWorkflow(signalClose, nil)
+		}, 20*time.Millisecond)
+	}
+	env.RegisterDelayedCallback(cancelWhenParked, 15*time.Millisecond)
 
 	env.ExecuteWorkflow(SessionWorkflow, workflowInput{SessionID: id})
 	if err := env.GetWorkflowError(); err != nil {
