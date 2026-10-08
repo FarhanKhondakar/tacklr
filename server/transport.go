@@ -6,17 +6,18 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ryanaldo34/tacklr/durable"
+	"github.com/ryanaldo34/tacklr"
 	tacklrsecurity "github.com/ryanaldo34/tacklr/security"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
 const defaultHTTPShutdown = 5 * time.Second
 
-// Server serves a durable.Runtime over HTTP, with WebSocket when the request upgrades.
+// Server serves a session.Runtime over HTTP, with WebSocket when the request upgrades.
 // Protocols is the ordered list of wire implementations (ACP and/or host protocols).
 type Server struct {
-	Runtime   durable.Runtime
-	Catalog   durable.Catalog
+	Runtime   session.Runtime
+	Agent     tacklr.AgentOptions
 	Protocols []Protocol
 	// Connections tracks ACP WebSocket connections.
 	// Custom protocols may ignore it.
@@ -30,22 +31,22 @@ type Server struct {
 	networkPolicyConfigured bool
 }
 
-// NewServer wraps a Runtime and one or more Protocols. ACP is NewACPProtocol;
-// pass additional implementations to mount their HTTPRoutes on the same mux.
-func NewServer(rt durable.Runtime, cat durable.Catalog, protocols ...Protocol) *Server {
+// NewServer wraps a Runtime and one or more Protocols.
+// The ACP built-in is acp.New. Pass more Protocols to mount them on the same mux.
+func NewServer(rt session.Runtime, agent tacklr.AgentOptions, protocols ...Protocol) *Server {
 	if rt == nil || len(protocols) == 0 {
 		panic("server: Runtime and at least one Protocol are required")
 	}
 	return &Server{
 		Runtime:     rt,
-		Catalog:     cat,
+		Agent:       agent,
 		Protocols:   protocols,
 		Connections: NewConnectionRegistry(),
 	}
 }
 
 func (s *Server) env(conn *Conn) ProtocolEnv {
-	return ProtocolEnv{Runtime: s.Runtime, Catalog: s.Catalog, Conn: conn, Security: s.Security, Connections: s.Connections}
+	return ProtocolEnv{Runtime: s.Runtime, Agent: s.Agent, Conn: conn, Security: s.Security, Connections: s.Connections}
 }
 
 // HTTPMux mounts every Protocol's HTTP routes. Used by ServeHTTP and tests.

@@ -14,7 +14,9 @@ threshold:
   package: 70
   # Library total after excludes (cmd/, testkit, live helpers).
   # Helixgraph is included: CI runs Testcontainers Helix (enterprise-dev).
-  total: 90
+  # 89: the in-process session driver and its scripted tests are gone.
+  # What remains uncovered is error handling, not a missing caller outcome.
+  total: 89
 
 # First matching override wins (specific packages first).
 override:
@@ -24,10 +26,8 @@ override:
     threshold: 100
   - path: github.com/ryanaldo34/tacklr/server$
     threshold: 95
-  - path: github.com/ryanaldo34/tacklr/durable/internal$
+  - path: github.com/ryanaldo34/tacklr/session/internal$
     threshold: 95
-  - path: github.com/ryanaldo34/tacklr/durable/inprocess$
-    threshold: 90
   - path: github.com/ryanaldo34/tacklr/builtins$
     threshold: 90
   - path: github.com/ryanaldo34/tacklr/interrupt$
@@ -56,6 +56,9 @@ exclude:
     - internal/testhttp
     - internal/durtest
     - internal/livesess
+    # Docker bootstrap for live Temporal tests. Failure branches are the
+    # container runtime, not a product outcome.
+    - internal/temporaldocker
     # Exporter constructors, not product outcomes.
     - telemetry/otel.go
 

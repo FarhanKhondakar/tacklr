@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -32,7 +31,7 @@ func unionSession(t *testing.T, dirs ...string) *vfs.MountSession {
 		if err := os.MkdirAll(host, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		opens = append(opens, builtins.Local(host))
+		opens = append(opens, vfs.Local(host))
 	}
 	ms, err := vfs.Tree(vfs.At("skills", vfs.Union(opens...)).ReadOnly())(t.Context(), t.Name(), vfs.Request{})
 	if err != nil {
@@ -48,7 +47,7 @@ func TestMountSession_unionMergesBackends(t *testing.T) {
 	writeUnionTree(t, a, map[string]string{"alpha/SKILL.md": "---\nname: alpha\ndescription: A\n---\n\nA"})
 	writeUnionTree(t, b, map[string]string{"zeta/SKILL.md": "---\nname: zeta\ndescription: Z\n---\n\nZ"})
 
-	ms, err := vfs.Tree(vfs.At("skills", vfs.Union(builtins.Local(a), builtins.Local(b))).ReadOnly())(ctx, t.Name(), vfs.Request{})
+	ms, err := vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(a), vfs.Local(b))).ReadOnly())(ctx, t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +112,7 @@ func TestMountSession_unionNameCollisionAtMount(t *testing.T) {
 	c, d := t.TempDir(), t.TempDir()
 	writeUnionTree(t, c, map[string]string{"dup/SKILL.md": "c"})
 	writeUnionTree(t, d, map[string]string{"dup/SKILL.md": "d"})
-	_, err := vfs.Tree(vfs.At("skills", vfs.Union(builtins.Local(c), builtins.Local(d))))(t.Context(), t.Name(), vfs.Request{})
+	_, err := vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(c), vfs.Local(d))))(t.Context(), t.Name(), vfs.Request{})
 	if !errors.Is(err, vfs.ErrAmbiguous) {
 		t.Fatalf("err = %v", err)
 	}
@@ -150,7 +149,7 @@ func TestUnion_constructErrors(t *testing.T) {
 	skip := vfs.Open(func(context.Context, string, vfs.Binding) (vfs.Provider, error) {
 		return nil, nil
 	})
-	p, err := vfs.Union(builtins.Local(t.TempDir()), skip)(ctx, t.Name(), vfs.Binding{})
+	p, err := vfs.Union(vfs.Local(t.TempDir()), skip)(ctx, t.Name(), vfs.Binding{})
 	if err != nil || p == nil {
 		t.Fatalf("nil member skipped: p=%v err=%v", p, err)
 	}
@@ -195,7 +194,7 @@ func TestMountSession_unionMissingAndCanceled(t *testing.T) {
 	if _, err := ms.ReadText(canceled, "/workspace/skills/x"); err == nil {
 		t.Fatal("ReadText canceled")
 	}
-	if _, err := vfs.Tree(vfs.At("skills", vfs.Union(builtins.Local(t.TempDir()))))(canceled, "union-cancel", vfs.Request{}); err == nil {
+	if _, err := vfs.Tree(vfs.At("skills", vfs.Union(vfs.Local(t.TempDir()))))(canceled, "union-cancel", vfs.Request{}); err == nil {
 		t.Fatal("Tree canceled")
 	}
 }
@@ -205,8 +204,8 @@ func TestMountSession_workAndSkills(t *testing.T) {
 	work, pack := t.TempDir(), t.TempDir()
 	writeUnionTree(t, pack, map[string]string{"alpha/SKILL.md": "---\nname: alpha\ndescription: A\n---\n\nA"})
 	ms, err := vfs.Tree(
-		vfs.At("work", builtins.Local(work)),
-		vfs.At("skills", vfs.Union(builtins.Local(pack))).ReadOnly(),
+		vfs.At("work", vfs.Local(work)),
+		vfs.At("skills", vfs.Union(vfs.Local(pack))).ReadOnly(),
 	)(ctx, t.Name(), vfs.Request{})
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +226,7 @@ func TestMountSession_workAndSkills(t *testing.T) {
 
 func TestUnion_providerRejectsWritesAndInvalidPaths(t *testing.T) {
 	ctx := t.Context()
-	p, err := vfs.Union(builtins.Local(t.TempDir()))(ctx, t.Name(), vfs.Binding{})
+	p, err := vfs.Union(vfs.Local(t.TempDir()))(ctx, t.Name(), vfs.Binding{})
 	if err != nil {
 		t.Fatal(err)
 	}

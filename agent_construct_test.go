@@ -44,9 +44,9 @@ func TestNewTurnManager_constructFailClosed(t *testing.T) {
 	}
 	ms := mustMountTree(t, t.Name(), vfs.At("skills", vfs.Local(root)))
 	_, err := NewTurnManager(context.Background(), AgentOptions{
-		Config:        Config{MaxWindowSize: 8192},
+		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
-		SkillsSession: ms,
+		skillsSession: ms,
 	})
 	if err == nil || !strings.Contains(err.Error(), "initialize skills") {
 		t.Fatalf("want skills construct error, got %v", err)
@@ -68,10 +68,10 @@ func TestNewTurnManager_skillsIsolatedFromWorkspace(t *testing.T) {
 	skillsMS := mustMountTree(t, t.Name()+"-skills", vfs.At("skills", vfs.Local(pack)))
 
 	h := mustNewTurnManager(t, AgentOptions{
-		Config:        Config{MaxWindowSize: 8192},
+		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
-		MountSession:  ms,
-		SkillsSession: skillsMS,
+		mountSession:  ms,
+		skillsSession: skillsMS,
 	})
 	t.Cleanup(h.Close)
 
@@ -114,10 +114,6 @@ func TestNewTurnManager_configurationInvariants(t *testing.T) {
 			opts: AgentOptions{Model: &errWindowStrategy{}},
 		},
 		{
-			name: "negative max window",
-			opts: AgentOptions{Model: validModel, Config: Config{MaxWindowSize: -1}},
-		},
-		{
 			name: "invalid pressure ratio",
 			opts: AgentOptions{Model: validModel, ContextPolicy: ContextPolicy{PressureRatio: 2}},
 		},
@@ -150,10 +146,6 @@ func TestNewTurnManager_configurationInvariants(t *testing.T) {
 					{Name: "remote", Type: mcp.TransportHTTP, URL: "https://example.test", CredentialRef: "vault://remote"},
 				},
 			},
-		},
-		{
-			name: "negative max turn requests",
-			opts: AgentOptions{Model: validModel, Config: Config{MaxTurnRequests: -1}},
 		},
 	}
 
@@ -215,10 +207,10 @@ func TestTurnManager_checkpointAfterRun(t *testing.T) {
 	wd := &recordingWatchdog{}
 	mock := &scriptedModel{SupportsMIMEFn: IsTextMIME}
 	h, err := NewTurnManager(t.Context(), AgentOptions{
-		SessionID:    "sess",
-		Model:        mock,
-		WatchDog:     wd,
-		Config:       Config{MaxWindowSize: 8192, SystemPrompt: "be brief"},
+		sessionID:     "sess",
+		Model:         mock,
+		WatchDog:      wd,
+		MaxWindowSize: 8192, SystemPrompt: "be brief",
 		SkillsLoader: stubSkills{},
 		Specialists: []*Specialist{{
 			Name:        "researcher",

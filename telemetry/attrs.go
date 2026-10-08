@@ -30,7 +30,7 @@ const (
 	AttrThreadID    = "tacklr.thread_id"
 	AttrTurnKind    = "tacklr.turn.kind" // prompt | resume
 	AttrLoadSession = "tacklr.load_session"
-	AttrRuntime     = "tacklr.runtime" // embed | inprocess | temporal
+	AttrRuntime     = "tacklr.runtime" // embed | temporal
 	AttrToolName    = "tacklr.tool.name"
 	AttrToolNS      = "tacklr.tool.namespace"
 	AttrToolStatus  = "tacklr.tool.status" // success | error | interrupt | …
@@ -65,12 +65,10 @@ const (
 )
 
 // Runtime values for AttrRuntime (closed enum). Durable backends that are not
-// Temporal should pick a stable id of their own (e.g. "azure-df") rather than
-// overloading these.
+// Temporal should pick a stable id of their own rather than overloading these.
 const (
-	RuntimeEmbed     = "embed"
-	RuntimeInProcess = "inprocess"
-	RuntimeTemporal  = "temporal"
+	RuntimeEmbed    = "embed"
+	RuntimeTemporal = "temporal"
 )
 
 // Model phase values for AttrModelPhase (closed enum).

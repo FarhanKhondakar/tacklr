@@ -18,7 +18,7 @@ func NewSearchRecordsTool(store RecordStore) *tacklr.Tool {
 }
 ```
 
-Register the result on `AgentOptions.Tools`. Catalog register time is when the closure is formed. Rebuild the `*Tool` if you need a different client.
+Register the result on `AgentOptions.Tools`. The closure is formed when the host builds the agent. Rebuild the `*Tool` if you need a different client.
 
 ### Tests
 
@@ -35,23 +35,23 @@ Or invoke the tool directly with that constructor. You do not mock `HarnessRunti
 
 ### What `HarnessRuntime` is for
 
-Progress (`EmitUpdate`), park (`Park`), specialists (`RunSpecialist`), jobs (`Schedule` / `Jobs` / `CancelJob`), and session key-values (`StateGet` / `StateSet` / `StateDelete`). Hosts set those values on `CreateSession.State`, `Prompt.State`, or `Resume.State`. Close over clients in the constructor. Register named workers on in-process / Temporal `Config.Jobs`. Tools do not wait on jobs; a tool call already blocks the next model turn.
+Progress (`EmitUpdate`), park (`Park`), specialists (`RunSpecialist`), jobs (`Schedule` / `Jobs` / `CancelJob`), and session key-values (`StateGet` / `StateSet` / `StateDelete`). Hosts set those values on `CreateSession.State`, `Prompt.State`, or `Resume.State`. Close over clients in the constructor. Register named workers on `temporal.Config.Jobs`. Tools do not wait on jobs; a tool call already blocks the next model turn.
 
-## Optional builtins
+## Optional tools
 
-Package `builtins` exports optional tools. Construct them with a closed-over client and put the result on `AgentOptions.Tools`. The harness does not inject these from options fields.
+Packages `web` and `email` export optional tools. Construct them with a closed-over client and put the result on `AgentOptions.Tools`. The harness does not inject these from options fields.
 
 ```go
-exa := builtins.NewExa(os.Getenv("EXA_API_KEY"))
-mail := builtins.Gmail(gmailService)
+client := web.NewExa(os.Getenv("EXA_API_KEY"))
+mail := gmail.New(gmailService)
 
 opts := tacklr.AgentOptions{
     Model: model,
     Tools: []*tacklr.Tool{
-        builtins.WebSearch(exa),
-        builtins.WebFetch(exa),
-        builtins.ReadInbox(mail),
-        builtins.SendEmail(mail),
+        web.WebSearch(client),
+        web.WebFetch(client),
+        email.ReadInbox(mail),
+        email.SendEmail(mail),
     },
 }
 ```
@@ -65,7 +65,7 @@ These still inject when the turn’s world is present. They close over per-turn 
 | You set | Tools that close over it |
 |---------|--------------------------|
 | `MountSession` | `read`, `write`, `write_document`, `write_spreadsheet`, `run_command` |
-| `SkillsSession` (`AgentSpec.OpenSkills`) | `read_skill` |
+| `SkillsSession` (`AgentOptions.OpenSkills`) | `read_skill` |
 | `Brain` | `search`, `find_exact`, `read_object`, `schema`, `save_*`, `link`, `expand`, … |
 | Brain + VFS + namespace (index bridge) | `index_file`, `unindex` |
 

@@ -4,17 +4,16 @@ import (
 	"context"
 )
 
-// InferenceStep is the result of one model invocation for the durable driver.
+// InferenceStep is the result of one model invocation for the session driver.
 type InferenceStep struct {
 	ToolCalls []ToolCall
 	Complete  bool
 }
 
-// ToolStep is the result of one tool invocation for the durable driver.
+// ToolStep is the result of one tool invocation for the session driver.
 // Interrupted means the tool parked; the driver must persist, publish yield,
-// and wait for Resume. AwaitJobID means the tool is still open: the durable
-// loop waits for that job, then RecordToolResult. It must not block inside
-// the Temporal Tool activity.
+// and wait for Resume. AwaitJobID means the tool is still open: the session
+// loop waits for that child session, then RecordToolResult.
 type ToolStep struct {
 	Interrupted   bool
 	InterruptID   string
@@ -22,21 +21,21 @@ type ToolStep struct {
 	AwaitJobID    string
 }
 
-// TurnState is per-slice counters for the durable inference loop.
+// TurnState is per-slice counters for the session inference loop.
 type TurnState struct {
 	ModelRequests int
 	HadToolRound  bool
 }
 
-// Engine is the durable-runtime view of a TurnManager.
+// Engine is the session-runtime view of a TurnManager.
 type Engine interface {
 	AbsorbUser(ctx context.Context, user *Message, out chan StreamEvent) error
 	PendingToolCalls() []ToolCall
 	RunInference(ctx context.Context, st *TurnState, out chan StreamEvent) (InferenceStep, error)
 	RunToolCall(ctx context.Context, tc ToolCall, out chan StreamEvent) (ToolStep, error)
 	ApplyResume(finishedInterrupts map[string][]byte) error
-	// RecordToolResult appends a RoleTool message without executing (Temporal
-	// after a child workflow already ran).
+	// RecordToolResult appends a RoleTool message for a tool call that already
+	// ran. A waited child session uses this once its result is known.
 	RecordToolResult(tc ToolCall, output string)
 	Messages() []*Message
 }

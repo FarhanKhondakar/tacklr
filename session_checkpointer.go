@@ -6,7 +6,7 @@ import (
 
 // captureCheckpoint assembles a durable checkpoint from the message window,
 // session manager (user state + plan + interrupts), and harness park maps.
-// Persistence I/O is durable.SnapshotStore.
+// Persistence I/O is session.SnapshotStore.
 func captureCheckpoint(
 	window []*Message,
 	sm *sessionManager,

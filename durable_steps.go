@@ -178,18 +178,6 @@ func (a *TurnManager) runToolCall(ctx context.Context, tc ToolCall, out chan Str
 	if err != nil && !errors.As(err, &parked) && (errors.Is(err, ErrAuthExpired) || errors.Is(err, vfs.ErrAuthExpired)) {
 		err = a.session.Park(tcKey, &interrupt.AuthExpired{Tool: tc.Name})
 	}
-	var waitJob *JobWaitError
-	if errors.As(err, &waitJob) {
-		a.pendingMu.Lock()
-		a.pendingToolCalls[tcKey] = PendingToolCall{ToolCall: &tc, AwaitJob: true}
-		a.pendingMu.Unlock()
-		toolSpan.Finish("success", nil)
-		id := ""
-		if waitJob != nil {
-			id = waitJob.ID
-		}
-		return ToolStep{AwaitJobID: id}, nil
-	}
 	if errors.As(err, &parked) {
 		serialized, _ := parked.Serialize()
 		data, _ := json.Marshal(map[string]any{
@@ -218,6 +206,13 @@ func (a *TurnManager) runToolCall(ctx context.Context, tc ToolCall, out chan Str
 			return ToolStep{}, nil
 		}
 		return ToolStep{}, err
+	}
+	if turnRT.wait != nil && *turnRT.wait != "" {
+		a.pendingMu.Lock()
+		a.pendingToolCalls[tcKey] = PendingToolCall{ToolCall: &tc, AwaitJob: true}
+		a.pendingMu.Unlock()
+		toolSpan.Finish("success", nil)
+		return ToolStep{AwaitJobID: *turnRT.wait}, nil
 	}
 	var effects batchToolResultEffects
 	effects.merge(toolDisp)

@@ -1,4 +1,4 @@
-package server
+package server_test
 
 import (
 	"context"
@@ -7,11 +7,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ryanaldo34/tacklr/server"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
 )
 
@@ -29,7 +30,7 @@ var (
 func TestPostgresWireStore_putGetDelete(t *testing.T) {
 	ctx := context.Background()
 	conn := wireConn(t)
-	ws := NewPostgresWireStore(conn, "")
+	ws := server.NewPostgresWireStore(conn, "")
 
 	payload, _ := json.Marshal(map[string]any{
 		"cwd":          "/proj",
@@ -68,7 +69,7 @@ func TestPostgresWireStore_putGetDelete(t *testing.T) {
 	}
 
 	_, err = ws.Get(ctx, "missing")
-	if !errors.Is(err, ErrSessionNotFound) {
+	if !errors.Is(err, server.ErrSessionNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
 
@@ -76,7 +77,7 @@ func TestPostgresWireStore_putGetDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = ws.Get(ctx, "sess-1")
-	if !errors.Is(err, ErrSessionNotFound) {
+	if !errors.Is(err, server.ErrSessionNotFound) {
 		t.Fatalf("after delete: %v", err)
 	}
 }
@@ -85,15 +86,13 @@ func TestPostgresWireStore_putGetDelete(t *testing.T) {
 // with the same Postgres wire store, load + prompt succeed.
 func TestPostgresWireStore_acpLoadAfterRestart(t *testing.T) {
 	conn := wireConn(t)
-	wire := NewPostgresWireStore(conn, "acp")
+	wire := server.NewPostgresWireStore(conn, "acp")
 
-	strategy := &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
-		},
-	}
+	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "ok", IsComplete: true}
+	})
 
-	r1 := newTestRuntime(t, strategy, durable.AgentSpec{})
+	r1 := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	s1 := newACPTestServerWithWire(t, r1, wire)
 	rec1 := s1.rpc(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/proj"}}`)
 	sessionID, _ := acpRPCResult(t, rec1)["sessionId"].(string)
@@ -101,8 +100,7 @@ func TestPostgresWireStore_acpLoadAfterRestart(t *testing.T) {
 		t.Fatal("missing sessionId")
 	}
 
-	r2 := newTestRuntime(t, strategy, durable.AgentSpec{})
-	s2 := newACPTestServerWithWire(t, r2, wire)
+	s2 := newACPTestServerWithWire(t, r1, wire)
 	rec2 := s2.rpc(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"` + sessionID + `","cwd":"/proj"}}`)
 	if acpRPCResult(t, rec2)["sessionId"] != sessionID {
 		t.Fatalf("load: %s", rec2.Body.String())
@@ -150,7 +148,7 @@ func wireConn(t *testing.T) *pgx.Conn {
 			_ = ctr.Terminate(ctx)
 			return
 		}
-		if err := NewPostgresWireStore(conn, "acp").Setup(ctx); err != nil {
+		if err := server.NewPostgresWireStore(conn, "acp").Setup(ctx); err != nil {
 			wireErr = err
 			_ = conn.Close(ctx)
 			_ = ctr.Terminate(ctx)

@@ -1,6 +1,6 @@
 // Package skills discovers and parses application-owned SKILL.md files.
 //
-// Discovery walks a host-only MountSession (AgentSpec.OpenSkills). That
+// Discovery walks a host-only MountSession (AgentOptions.OpenSkills). That
 // session is not the agent /workspace tree. The agent reads instructions
 // only through read_skill.
 package skills

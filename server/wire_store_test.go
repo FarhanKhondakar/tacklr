@@ -1,14 +1,16 @@
-package server
+package server_test
 
 import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/ryanaldo34/tacklr/server"
 )
 
 func TestMemoryWireStore_putGetDelete(t *testing.T) {
-	w := NewMemoryWireStore()
-	if _, err := w.Get(context.Background(), "missing"); !errors.Is(err, ErrSessionNotFound) {
+	w := server.NewMemoryWireStore()
+	if _, err := w.Get(context.Background(), "missing"); !errors.Is(err, server.ErrSessionNotFound) {
 		t.Fatalf("missing get: %v", err)
 	}
 	if err := w.Put(context.Background(), "k", []byte(`{"cwd":"/proj"}`)); err != nil {
@@ -24,7 +26,7 @@ func TestMemoryWireStore_putGetDelete(t *testing.T) {
 	if err := w.Delete(context.Background(), "k"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Get(context.Background(), "k"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := w.Get(context.Background(), "k"); !errors.Is(err, server.ErrSessionNotFound) {
 		t.Fatalf("after delete: %v", err)
 	}
 }

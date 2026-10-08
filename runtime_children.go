@@ -11,7 +11,7 @@ import (
 // Durable runtimes bind nested sessions and named workers; nil host means
 // jobs are unavailable.
 type JobHost interface {
-	RunSpecialist(ctx context.Context, name, task, callID string) (string, error)
+	RunSpecialist(ctx context.Context, name, task, callID string) (SpecialistResult, error)
 	Schedule(ctx context.Context, job JobRequest, callID string) (Job, error)
 	Jobs() []Job
 	CancelJob(ctx context.Context, id string) error
@@ -22,10 +22,13 @@ type JobHost interface {
 type toolRuntime struct {
 	sessionRuntime
 	host JobHost
+	// wait is shared across copies of this runtime for one tool call.
+	// RunSpecialist sets it when the child is not finished yet.
+	wait *string
 }
 
 func newToolRuntime(ch chan StreamEvent, sm *sessionManager, host JobHost) toolRuntime {
-	return toolRuntime{sessionRuntime: newSessionRuntime(ch, sm), host: host}
+	return toolRuntime{sessionRuntime: newSessionRuntime(ch, sm), host: host, wait: new(string)}
 }
 
 func (t toolRuntime) WithToolCallID(id string) toolRuntime {
@@ -63,12 +66,19 @@ func (t toolRuntime) CancelJob(ctx context.Context, id string) error {
 	return host.CancelJob(ctx, id)
 }
 
-func (t toolRuntime) RunSpecialist(ctx context.Context, name, task string) (string, error) {
+func (t toolRuntime) RunSpecialist(ctx context.Context, name, task string) (SpecialistResult, error) {
 	host, err := t.requireHost()
 	if err != nil {
-		return "", err
+		return SpecialistResult{}, err
 	}
-	return host.RunSpecialist(ctx, name, task, t.CurrentToolCallID())
+	res, err := host.RunSpecialist(ctx, name, task, t.CurrentToolCallID())
+	if err != nil {
+		return SpecialistResult{}, err
+	}
+	if res.WaitFor != "" && t.wait != nil {
+		*t.wait = res.WaitFor
+	}
+	return res, nil
 }
 
 func formatJobs(rows []Job) string {
@@ -109,11 +119,14 @@ func spawnSpecialist(ctx context.Context, args spawnSpecialistArgs, runtime Harn
 		}
 		return fmt.Sprintf("Job %s scheduled (name=%s). The result arrives as a later message. Use list_children to inspect, or cancel_child to stop it.", job.ID, job.Name), nil
 	}
-	out, err := runtime.RunSpecialist(ctx, spec, task)
+	res, err := runtime.RunSpecialist(ctx, spec, task)
 	if err != nil {
 		return "", spawnSpecialistErr(err)
 	}
-	return out, nil
+	if res.WaitFor != "" {
+		return "", nil
+	}
+	return res.Output, nil
 }
 
 func spawnSpecialistErr(err error) error {

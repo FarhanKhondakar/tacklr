@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/internal/testdrive"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
@@ -145,7 +144,7 @@ func TestDrive_requiresClient(t *testing.T) {
 			t.Fatal("want panic")
 		}
 	}()
-	_ = builtins.Drive(nil)
+	_ = vfs.Drive(nil)
 }
 
 func TestMountSession_gdriveDirectoryAndWriteDocument(t *testing.T) {

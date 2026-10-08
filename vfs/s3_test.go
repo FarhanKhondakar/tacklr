@@ -17,7 +17,6 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -25,18 +24,18 @@ const minioImage = "minio/minio:RELEASE.2024-06-13T22-53-53Z"
 
 func TestS3_rejectsBadConfig(t *testing.T) {
 	ctx := t.Context()
-	if _, err := builtins.S3(nil, "")(ctx, "s", vfs.Binding{}); err == nil {
+	if _, err := vfs.S3(nil, "")(ctx, "s", vfs.Binding{}); err == nil {
 		t.Fatal("nil client")
 	}
-	if _, err := builtins.S3(builtins.AWSS3{}, "")(ctx, "s", vfs.Binding{}); err == nil {
+	if _, err := vfs.S3(vfs.AWSS3{}, "")(ctx, "s", vfs.Binding{}); err == nil {
 		t.Fatal("missing bucket")
 	}
-	if _, err := builtins.S3(builtins.AWSS3{}, "b")(ctx, "s", vfs.Binding{
+	if _, err := vfs.S3(vfs.AWSS3{}, "b")(ctx, "s", vfs.Binding{
 		Params: map[string]string{"prefix": "a/../b"},
 	}); err == nil {
 		t.Fatal("bad prefix")
 	}
-	var aws builtins.AWSS3
+	var aws vfs.AWSS3
 	if _, _, _, err := aws.Head(ctx, "b", "k"); err == nil {
 		t.Fatal("nil AWS Head")
 	}
@@ -60,8 +59,8 @@ func TestMountSession_s3MinIO(t *testing.T) {
 	client, bucket := startMinIO(ctx, t)
 
 	ms, err := vfs.Tree(
-		vfs.At("data", builtins.S3(builtins.AWSS3{Client: client}, bucket)),
-		vfs.At("ro", builtins.S3(builtins.AWSS3{Client: client}, bucket)).ReadOnly(),
+		vfs.At("data", vfs.S3(vfs.AWSS3{Client: client}, bucket)),
+		vfs.At("ro", vfs.S3(vfs.AWSS3{Client: client}, bucket)).ReadOnly(),
 	)(ctx, "sess-s3", vfs.Request{Bindings: []vfs.Binding{
 		{Params: map[string]string{vfs.ParamName: "data", "prefix": "runs/1"}},
 		{Params: map[string]string{vfs.ParamName: "ro", "prefix": "readonly"}},
@@ -217,7 +216,7 @@ func TestMountSession_s3MinIO(t *testing.T) {
 		t.Fatalf("octet-stream + .go key: Stat MediaType=%q err=%v", st.MediaType, err)
 	}
 
-	open := builtins.S3(builtins.AWSS3{Client: client}, bucket)
+	open := vfs.S3(vfs.AWSS3{Client: client}, bucket)
 	p, err := open(ctx, "sess", vfs.Binding{Params: map[string]string{"prefix": "direct"}})
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +263,7 @@ func TestMountSession_s3MinIO(t *testing.T) {
 		t.Fatal("open root as file")
 	}
 
-	blobMS, err := vfs.Tree(vfs.At("data", builtins.Blob(builtins.AWSS3{Client: client}, "")))(ctx, "blob-s3", vfs.Request{Bindings: []vfs.Binding{{
+	blobMS, err := vfs.Tree(vfs.At("data", vfs.Blob(vfs.AWSS3{Client: client}, "")))(ctx, "blob-s3", vfs.Request{Bindings: []vfs.Binding{{
 		Params: map[string]string{vfs.ParamName: "data", "container": bucket, "prefix": "blobrun"},
 	}}})
 	if err != nil {

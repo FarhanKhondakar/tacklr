@@ -129,13 +129,12 @@ func FindSpecialist(specs []*Specialist, name string) *Specialist {
 }
 
 // WithSpecialist overlays a worker spec onto the parent session world. The child
-// keeps parent MCP, brain, interceptors, and skills (SkillsSession / SkillsLoader).
+// keeps parent MCP, brain, interceptors, and the turn binding from BindTurn.
 // Model, tools, nested workers, and instructions come from spec. Planning write
-// lock is off. MountSession, SkillsSession, and SessionID stay as the caller
-// set them (Runtime injects a child tree).
+// lock is off. The session runtime opens a new tree for the child.
 func (o AgentOptions) WithSpecialist(spec *Specialist) AgentOptions {
 	out := o
-	out.Config.SystemPrompt = spec.Instructions
+	out.SystemPrompt = spec.Instructions
 	if spec.Model != nil {
 		out.Model = spec.Model
 	}

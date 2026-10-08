@@ -13,7 +13,7 @@ import (
 //
 //	reg := prometheus.NewRegistry()
 //	mp := telemetry.MeterProviderFromPrometheusRegisterer(reg, "my-agent", "")
-//	// inprocess.New(catalog) / temporal.NewWorker(...)
+//	// rt.StartWorker()
 //	// http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 //
 // serviceName/serviceVersion set the same resource attributes as OTLP Init.

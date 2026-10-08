@@ -31,7 +31,7 @@ func TestNewTurnManager_rejectsInvalidSpecialists(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := NewTurnManager(context.Background(), AgentOptions{
-				Config: Config{MaxWindowSize: 8192}, Model: ok, Specialists: tc.specs,
+				MaxWindowSize: 8192, Model: ok, Specialists: tc.specs,
 			}); err == nil {
 				t.Fatal("expected constructor error")
 			}
@@ -42,7 +42,7 @@ func TestNewTurnManager_rejectsInvalidSpecialists(t *testing.T) {
 func TestSystemPrompt_listsSpecialistsSorted(t *testing.T) {
 	var n int
 	h := mustNewTurnManager(t, AgentOptions{
-		Config: Config{MaxWindowSize: 8192},
+		MaxWindowSize: 8192,
 		Model: &scriptedModel{
 			InvokeFn: func(ctx context.Context, msgs []*Message, tools []*Tool, ch chan<- LLMResponseChunk) {
 				n++
@@ -80,7 +80,7 @@ func TestWithSpecialist_sharesHostMountWriteAndCatalog(t *testing.T) {
 	parent, ms, eng, ns := vfsIndexHarness(t, true)
 	_ = parent
 	worker := mustNewTurnManager(t, AgentOptions{
-		MountSession:    ms,
+		mountSession:    ms,
 		Model:           &scriptedModel{},
 		Brain:           eng,
 		SearchNamespace: ns,
@@ -141,10 +141,10 @@ func TestWithSpecialist_inheritsParentSkills(t *testing.T) {
 	skillsMS := mustMountTree(t, t.Name()+"-skills", vfs.At("skills", vfs.Local(pack)))
 
 	opts := AgentOptions{
-		Config:        Config{MaxWindowSize: 8192, MaxTurnRequests: 4},
+		MaxWindowSize: 8192, MaxTurnRequests: 4,
 		Model:         &scriptedModel{},
-		MountSession:  ms,
-		SkillsSession: skillsMS,
+		mountSession:  ms,
+		skillsSession: skillsMS,
 	}
 	parent := mustNewTurnManager(t, opts)
 	t.Cleanup(parent.Close)
@@ -152,8 +152,8 @@ func TestWithSpecialist_inheritsParentSkills(t *testing.T) {
 		t.Fatal("parent missing read_skill")
 	}
 	inherited := opts.WithSpecialist(&Specialist{Name: "researcher", Model: &scriptedModel{}})
-	if inherited.Config.MaxTurnRequests != 4 || inherited.MountSession != ms {
-		t.Fatalf("WithSpecialist = %+v", inherited.Config)
+	if inherited.MaxTurnRequests != 4 || inherited.mountSession != ms {
+		t.Fatalf("WithSpecialist max=%d mount=%v", inherited.MaxTurnRequests, inherited.mountSession != nil)
 	}
 
 	worker := mustNewTurnManager(t, inherited)

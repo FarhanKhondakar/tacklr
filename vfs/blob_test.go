@@ -11,7 +11,6 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/vfs"
 )
 
@@ -23,18 +22,18 @@ const (
 
 func TestBlob_rejectsBadConfig(t *testing.T) {
 	ctx := t.Context()
-	if _, err := builtins.Blob(nil, "")(ctx, "s", vfs.Binding{}); err == nil {
+	if _, err := vfs.Blob(nil, "")(ctx, "s", vfs.Binding{}); err == nil {
 		t.Fatal("nil client")
 	}
-	if _, err := builtins.Blob(builtins.AzureBlob{}, "")(ctx, "s", vfs.Binding{}); err == nil {
+	if _, err := vfs.Blob(vfs.AzureBlob{}, "")(ctx, "s", vfs.Binding{}); err == nil {
 		t.Fatal("missing container")
 	}
-	if _, err := builtins.Blob(builtins.AzureBlob{}, "c")(ctx, "s", vfs.Binding{
+	if _, err := vfs.Blob(vfs.AzureBlob{}, "c")(ctx, "s", vfs.Binding{
 		Params: map[string]string{"prefix": "a/../b"},
 	}); err == nil {
 		t.Fatal("bad prefix")
 	}
-	var azure builtins.AzureBlob
+	var azure vfs.AzureBlob
 	if _, _, _, err := azure.Head(ctx, "c", "k"); err == nil {
 		t.Fatal("nil Azure Head")
 	}
@@ -52,7 +51,7 @@ func TestBlob_rejectsBadConfig(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := builtins.Blob(builtins.AzureBlob{}, "c")(canceled, "s", vfs.Binding{}); !errors.Is(err, context.Canceled) {
+	if _, err := vfs.Blob(vfs.AzureBlob{}, "c")(canceled, "s", vfs.Binding{}); !errors.Is(err, context.Canceled) {
 		t.Fatal("Open canceled")
 	}
 }
@@ -63,8 +62,8 @@ func TestMountSession_azureBlobAzurite(t *testing.T) {
 	client, container := startAzurite(ctx, t)
 
 	ms, err := vfs.Tree(
-		vfs.At("data", builtins.Blob(builtins.AzureBlob{Client: client}, container)),
-		vfs.At("ro", builtins.Blob(builtins.AzureBlob{Client: client}, container)).ReadOnly(),
+		vfs.At("data", vfs.Blob(vfs.AzureBlob{Client: client}, container)),
+		vfs.At("ro", vfs.Blob(vfs.AzureBlob{Client: client}, container)).ReadOnly(),
 	)(ctx, "sess-blob", vfs.Request{Bindings: []vfs.Binding{
 		{Params: map[string]string{vfs.ParamName: "data", "prefix": "runs/1"}},
 		{Params: map[string]string{vfs.ParamName: "ro", "prefix": "readonly"}},

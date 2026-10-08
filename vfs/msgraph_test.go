@@ -15,7 +15,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/builtins"
 	"github.com/ryanaldo34/tacklr/internal/testdrive"
 	"github.com/ryanaldo34/tacklr/internal/testhttp"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -335,11 +334,11 @@ func mustGraph(t *testing.T, srv *httptest.Server, holder *vfs.TokenHolder, acco
 	if holder == nil {
 		holder = vfs.NewTokenHolder(vfs.Credential{Token: "tok"})
 	}
-	api, err := builtins.NewGraph(holder, srv.URL, srv.Client())
+	api, err := vfs.NewGraph(holder, srv.URL, srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return builtins.Graph(api, holder, account)
+	return vfs.Graph(api, holder, account)
 }
 
 func mountGraphHTTP(t *testing.T, srv *httptest.Server, writable bool) (*vfs.MountSession, *vfs.TokenHolder) {
@@ -625,7 +624,7 @@ func TestGraph_requiresClient(t *testing.T) {
 			t.Fatal("want panic")
 		}
 	}()
-	_ = builtins.Graph(nil, nil, "")
+	_ = vfs.Graph(nil, nil, "")
 }
 
 func TestGraphFactory_organizationRequiresSiteOrDrive(t *testing.T) {

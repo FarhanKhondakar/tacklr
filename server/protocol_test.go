@@ -1,51 +1,58 @@
-package server
+package server_test
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ryanaldo34/tacklr/internal/livesess"
+	"github.com/ryanaldo34/tacklr/internal/temporaldocker"
+	"github.com/ryanaldo34/tacklr/server"
+	"github.com/ryanaldo34/tacklr/server/acp"
+	"github.com/ryanaldo34/tacklr/telemetry"
+
 	"github.com/ryanaldo34/tacklr"
-	"github.com/ryanaldo34/tacklr/durable"
 	"github.com/ryanaldo34/tacklr/internal/testkit"
+	"github.com/ryanaldo34/tacklr/session"
 )
 
-// healthProtocol is a host Protocol with one HTTP route (no Runtime turns).
+// healthProtocol is a host server.Protocol with one HTTP route (no Runtime turns).
 type healthProtocol struct{}
 
-func (healthProtocol) HandleInbound(ctx context.Context, env ProtocolEnv, body []byte) error {
+func (healthProtocol) HandleInbound(ctx context.Context, env server.ProtocolEnv, body []byte) error {
 	return nil
 }
 
-func (healthProtocol) HTTPRoutes() []HTTPRoute {
-	return []HTTPRoute{{
+func (healthProtocol) HTTPRoutes() []server.HTTPRoute {
+	return []server.HTTPRoute{{
 		Method:  "GET",
 		Pattern: "/healthz",
-		Handler: func(env ProtocolEnv, w http.ResponseWriter, r *http.Request) {
+		Handler: func(env server.ProtocolEnv, w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		},
 	}}
 }
 
-func (healthProtocol) OnStreamEvent(ctx context.Context, env ProtocolEnv, threadID string, ev tacklr.StreamEvent, reqID json.RawMessage) StreamControl {
-	return StreamControl{Finished: true}
+func (healthProtocol) OnStreamEvent(ctx context.Context, env server.ProtocolEnv, threadID string, ev tacklr.StreamEvent, reqID json.RawMessage) server.StreamControl {
+	return server.StreamControl{Finished: true}
 }
 
-func (healthProtocol) OnStreamClosed(ctx context.Context, env ProtocolEnv, threadID string, reqID json.RawMessage, cancelled bool) error {
+func (healthProtocol) OnStreamClosed(ctx context.Context, env server.ProtocolEnv, threadID string, reqID json.RawMessage, cancelled bool) error {
 	return nil
 }
 
 func TestServer_mountsHostProtocolBesideACP(t *testing.T) {
-	k := newTestRuntime(t, nil, durable.AgentSpec{})
-	srv := NewServer(k.Runtime, k.Catalog, NewACPProtocol(nil), healthProtocol{}).AllowAnonymousNetwork()
+	srv := server.NewServer(fakeRuntime{}, tacklr.AgentOptions{}, acp.New(nil), healthProtocol{}).AllowAnonymousNetwork()
 	mux := srv.HTTPMux()
 
 	rec := httptest.NewRecorder()
@@ -62,12 +69,12 @@ func TestServer_mountsHostProtocolBesideACP(t *testing.T) {
 }
 
 func TestACPProtocol_initializeResultShape(t *testing.T) {
-	result := acpInitializeResultWithAuth(nil, 1, nil, false)
+	result := acp.InitializeResult(tacklr.AgentOptions{}, 1, nil, false)
 	if result["protocolVersion"] != 1 {
 		t.Fatalf("protocolVersion = %v", result["protocolVersion"])
 	}
 	// Client asks for a future major; we respond with the latest we support (1).
-	if v := acpInitializeResultWithAuth(nil, 99, nil, false)["protocolVersion"]; v != 1 {
+	if v := acp.InitializeResult(tacklr.AgentOptions{}, 99, nil, false)["protocolVersion"]; v != 1 {
 		t.Fatalf("negotiated version for client 99 = %v, want 1", v)
 	}
 	caps, ok := result["agentCapabilities"].(map[string]any)
@@ -104,28 +111,28 @@ func TestACPProtocol_initializeResultShape(t *testing.T) {
 }
 
 type pumpProto struct {
-	onEvent func(tacklr.StreamEvent) StreamControl
+	onEvent func(tacklr.StreamEvent) server.StreamControl
 }
 
-func (pumpProto) HandleInbound(context.Context, ProtocolEnv, []byte) error {
+func (pumpProto) HandleInbound(context.Context, server.ProtocolEnv, []byte) error {
 	return nil
 }
-func (pumpProto) HTTPRoutes() []HTTPRoute { return nil }
-func (p pumpProto) OnStreamEvent(ctx context.Context, env ProtocolEnv, threadID string, ev tacklr.StreamEvent, reqID json.RawMessage) StreamControl {
+func (pumpProto) HTTPRoutes() []server.HTTPRoute { return nil }
+func (p pumpProto) OnStreamEvent(ctx context.Context, env server.ProtocolEnv, threadID string, ev tacklr.StreamEvent, reqID json.RawMessage) server.StreamControl {
 	if p.onEvent != nil {
 		return p.onEvent(ev)
 	}
-	return StreamControl{Finished: true}
+	return server.StreamControl{Finished: true}
 }
-func (pumpProto) OnStreamClosed(context.Context, ProtocolEnv, string, json.RawMessage, bool) error {
+func (pumpProto) OnStreamClosed(context.Context, server.ProtocolEnv, string, json.RawMessage, bool) error {
 	return nil
 }
 
-func terminalControl(ev tacklr.StreamEvent) StreamControl {
+func terminalControl(ev tacklr.StreamEvent) server.StreamControl {
 	if ev.Type == tacklr.StreamEventComplete || ev.Type == tacklr.StreamEventError {
-		return StreamControl{Finished: true}
+		return server.StreamControl{Finished: true}
 	}
-	return StreamControl{}
+	return server.StreamControl{}
 }
 
 // TestRunTurn_midPromptCancelThenNextPrompt is the protocol-agnostic coverage
@@ -134,37 +141,42 @@ func terminalControl(ev tacklr.StreamEvent) StreamControl {
 func TestRunTurn_midPromptCancelThenNextPrompt(t *testing.T) {
 	started := make(chan struct{})
 	var startedOnce sync.Once
-	strategy := &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			startedOnce.Do(func() { close(started) })
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case ch <- tacklr.LLMResponseChunk{
-					Type: tacklr.StreamEventMessage, Content: "early", IsComplete: false,
-				}:
-				}
+	var next atomic.Bool
+	strategy := testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+		if next.Load() {
+			ch <- tacklr.LLMResponseChunk{
+				Type: tacklr.StreamEventMessage, Content: "after-cancel", IsComplete: true,
 			}
-		},
-	}
-	k := newTestRuntime(t, strategy, durable.AgentSpec{})
+			return
+		}
+		startedOnce.Do(func() { close(started) })
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- tacklr.LLMResponseChunk{
+				Type: tacklr.StreamEventMessage, Content: "early", IsComplete: false,
+			}:
+			}
+		}
+	})
+	k := newTestRuntime(t, strategy, tacklr.AgentOptions{})
 	ctx := t.Context()
-	id, err := k.Runtime.CreateSession(ctx, durable.CreateSession{AgentID: "default"})
+	id, err := k.Runtime.CreateSession(ctx, session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog}
+	env := server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent}
 
 	var sawStream atomic.Bool
 	firstDone := make(chan error, 1)
 	go func() {
-		firstDone <- RunTurn(ctx, env, pumpProto{onEvent: func(ev tacklr.StreamEvent) StreamControl {
+		firstDone <- server.RunTurn(ctx, env, pumpProto{onEvent: func(ev tacklr.StreamEvent) server.StreamControl {
 			if ev.Type == tacklr.StreamEventMessage {
 				sawStream.Store(true)
 			}
 			return terminalControl(ev)
-		}}, string(id), nil, PromptOrResume{Prompt: durable.Prompt{Text: "hi"}})
+		}}, string(id), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}})
 	}()
 
 	select {
@@ -191,16 +203,12 @@ func TestRunTurn_midPromptCancelThenNextPrompt(t *testing.T) {
 		t.Fatal("first turn did not finish after cancel")
 	}
 
-	strategy.InvokeFn = func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-		ch <- tacklr.LLMResponseChunk{
-			Type: tacklr.StreamEventMessage, Content: "after-cancel", IsComplete: true,
-		}
-	}
+	next.Store(true)
 	var second []tacklr.StreamEvent
-	if err := RunTurn(ctx, env, pumpProto{onEvent: func(ev tacklr.StreamEvent) StreamControl {
+	if err := server.RunTurn(ctx, env, pumpProto{onEvent: func(ev tacklr.StreamEvent) server.StreamControl {
 		second = append(second, ev)
 		return terminalControl(ev)
-	}}, string(id), nil, PromptOrResume{Prompt: durable.Prompt{Text: "again"}}); err != nil {
+	}}, string(id), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "again"}}); err != nil {
 		t.Fatalf("second turn: %v", err)
 	}
 	var sawAfter, complete bool
@@ -218,62 +226,58 @@ func TestRunTurn_midPromptCancelThenNextPrompt(t *testing.T) {
 }
 
 func TestRunTurn_runtimeErrors(t *testing.T) {
-	k := newTestRuntime(t, &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "x", IsComplete: true}
-		},
-	}, durable.AgentSpec{})
-	env := ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog}
-	if err := RunTurn(t.Context(), env, pumpProto{}, "missing", nil, PromptOrResume{Prompt: durable.Prompt{Text: "hi"}}); err == nil {
+	k := newTestRuntime(t, testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "x", IsComplete: true}
+	}), tacklr.AgentOptions{})
+	env := server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent}
+	if err := server.RunTurn(t.Context(), env, pumpProto{}, "missing", nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}}); err == nil {
 		t.Fatal("want subscribe missing session")
 	}
-	id, err := k.Runtime.CreateSession(t.Context(), durable.CreateSession{AgentID: "default"})
+	id, err := k.Runtime.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RunTurn(t.Context(), env, pumpProto{}, string(id), nil, PromptOrResume{
-		Prompt: durable.Prompt{Text: "hi", State: map[string]any{"ch": make(chan int)}},
+	if err := server.RunTurn(t.Context(), env, pumpProto{}, string(id), nil, server.PromptOrResume{
+		Prompt: session.Prompt{Text: "hi", State: map[string]any{"ch": make(chan int)}},
 	}); err == nil {
 		t.Fatal("want prompt encode failure")
 	}
-	if err := RunTurn(t.Context(), env, pumpProto{}, string(id), nil, PromptOrResume{
-		Resume: &durable.Resume{State: map[string]any{"ch": make(chan int)}},
+	if err := server.RunTurn(t.Context(), env, pumpProto{}, string(id), nil, server.PromptOrResume{
+		Resume: &session.Resume{State: map[string]any{"ch": make(chan int)}},
 	}); err == nil {
 		t.Fatal("want resume encode failure")
 	}
-	id2, err := k.Runtime.CreateSession(t.Context(), durable.CreateSession{AgentID: "default"})
+	id2, err := k.Runtime.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RunTurn(t.Context(), env, pumpProto{onEvent: func(tacklr.StreamEvent) StreamControl {
+	if err := server.RunTurn(t.Context(), env, pumpProto{onEvent: func(tacklr.StreamEvent) server.StreamControl {
 		_ = k.Runtime.Close(t.Context(), id2)
-		return StreamControl{Resume: map[string][]byte{"nope": []byte(`{}`)}}
-	}}, string(id2), nil, PromptOrResume{Prompt: durable.Prompt{Text: "hi"}}); err == nil {
+		return server.StreamControl{Resume: map[string][]byte{"nope": []byte(`{}`)}}
+	}}, string(id2), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}}); err == nil {
 		t.Fatal("want resume-after-close failure")
 	}
 }
 
 func TestRunTurn_protocolErrorStopsTurn(t *testing.T) {
-	k := newTestRuntime(t, &testkit.ScriptedModel{
-		InvokeFn: func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
-			ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "x", IsComplete: true}
-		},
-	}, durable.AgentSpec{})
-	id, err := k.Runtime.CreateSession(t.Context(), durable.CreateSession{AgentID: "default"})
+	k := newTestRuntime(t, testkit.HTTPModel(t, func(ctx context.Context, msgs []*tacklr.Message, tools []*tacklr.Tool, ch chan<- tacklr.LLMResponseChunk) {
+		ch <- tacklr.LLMResponseChunk{Type: tacklr.StreamEventMessage, Content: "x", IsComplete: true}
+	}), tacklr.AgentOptions{})
+	id, err := k.Runtime.CreateSession(t.Context(), session.CreateSession{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = RunTurn(t.Context(), ProtocolEnv{Runtime: k.Runtime, Catalog: k.Catalog}, pumpProto{onEvent: func(tacklr.StreamEvent) StreamControl {
-		return StreamControl{Err: errors.New("encode")}
-	}}, string(id), nil, PromptOrResume{Prompt: durable.Prompt{Text: "hi"}})
+	err = server.RunTurn(t.Context(), server.ProtocolEnv{Runtime: k.Runtime, Agent: k.Agent}, pumpProto{onEvent: func(tacklr.StreamEvent) server.StreamControl {
+		return server.StreamControl{Err: errors.New("encode")}
+	}}, string(id), nil, server.PromptOrResume{Prompt: session.Prompt{Text: "hi"}})
 	if err == nil {
 		t.Fatal("want protocol error")
 	}
 }
 
 func TestServeHTTP_respectsContextCancel(t *testing.T) {
-	r := newTestRuntime(t, &testkit.ScriptedModel{}, durable.AgentSpec{})
-	srv := NewServer(r.Runtime, r.Catalog, NewACPProtocol(nil)).AllowAnonymousNetwork()
+	r := newTestRuntime(t, testkit.HTTPModel(t, nil), tacklr.AgentOptions{})
+	srv := server.NewServer(r.Runtime, r.Agent, acp.New(nil)).AllowAnonymousNetwork()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -286,6 +290,166 @@ func TestServeHTTP_respectsContextCancel(t *testing.T) {
 			t.Fatalf("shutdown: %v", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("ServeHTTP did not exit")
+		t.Fatal("server.ServeHTTP did not exit")
 	}
+}
+
+func TestMain(m *testing.M) {
+	shutdown, err := telemetry.Init(context.Background(), telemetry.Config{})
+	if err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = shutdown(context.Background())
+	temporaldocker.Stop()
+	os.Exit(code)
+}
+
+// fakeRuntime is a test fixture. It does not run a turn.
+type fakeRuntime struct {
+	create func(context.Context, session.CreateSession) (session.SessionID, error)
+}
+
+func (f fakeRuntime) CreateSession(ctx context.Context, req session.CreateSession) (session.SessionID, error) {
+	if f.create != nil {
+		return f.create(ctx, req)
+	}
+	return "sess", nil
+}
+
+func (fakeRuntime) Prompt(context.Context, session.SessionID, session.Prompt) error { return nil }
+func (fakeRuntime) Resume(context.Context, session.SessionID, session.Resume) error { return nil }
+func (fakeRuntime) Cancel(context.Context, session.SessionID) error                 { return nil }
+func (fakeRuntime) Close(context.Context, session.SessionID) error                  { return nil }
+func (fakeRuntime) Head(context.Context, session.SessionID) (session.Seq, error)    { return 0, nil }
+func (fakeRuntime) Subscribe(context.Context, session.SessionID, session.Seq) (session.Subscription, error) {
+	ch := make(chan tacklr.StreamEvent)
+	close(ch)
+	return closedSub{ch}, nil
+}
+func (fakeRuntime) Children(context.Context, session.SessionID) ([]session.SessionID, error) {
+	return nil, nil
+}
+func (fakeRuntime) Jobs(context.Context, session.SessionID) ([]session.SessionStatus, error) {
+	return nil, nil
+}
+func (fakeRuntime) Status(context.Context, session.SessionID) (session.SessionStatus, error) {
+	return session.SessionStatus{}, session.ErrSessionNotFound
+}
+
+type closedSub struct{ ch chan tacklr.StreamEvent }
+
+func (s closedSub) Events() <-chan tacklr.StreamEvent { return s.ch }
+func (closedSub) Close() error                        { return nil }
+
+type testRuntime struct {
+	Runtime session.Runtime
+	Agent   tacklr.AgentOptions
+}
+
+func fakeHost(t *testing.T) *testRuntime {
+	t.Helper()
+	agent := tacklr.AgentOptions{Model: testkit.HTTPModel(t, nil),
+		MaxWindowSize: 8192, SystemPrompt: "test prompt"}
+	return &testRuntime{Runtime: fakeRuntime{}, Agent: agent}
+}
+
+func newTestRuntime(t *testing.T, model tacklr.InferenceStrategy, spec tacklr.AgentOptions) *testRuntime {
+	t.Helper()
+	if spec.Model == nil {
+		spec.Model = model
+	}
+	if spec.Model == nil {
+		spec.Model = testkit.HTTPModel(t, nil)
+	}
+	if spec.MaxWindowSize == 0 {
+		spec.MaxWindowSize = 8192
+	}
+	if spec.SystemPrompt == "" {
+		spec.SystemPrompt = "test prompt"
+	}
+	return &testRuntime{
+		Runtime: livesess.Runtime(t, spec),
+		Agent:   spec,
+	}
+}
+
+func newTestServer(t *testing.T) *server.Server {
+	t.Helper()
+	k := newTestRuntime(t, nil, tacklr.AgentOptions{})
+	return server.NewServer(k.Runtime, k.Agent, acp.New(nil))
+}
+
+type recordingMessageWriter = testkit.RecordingWriter
+
+func acpSessionID(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["error"] != nil {
+		t.Fatalf("unexpected error: %v", resp["error"])
+	}
+	sessionID, ok := resp["result"].(map[string]any)["sessionId"].(string)
+	if !ok || sessionID == "" {
+		t.Fatalf("missing sessionId in result: %v", resp)
+	}
+	return sessionID
+}
+
+func serveACPInbound(t *testing.T, r *testRuntime, proto server.Protocol, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	mw := acp.HTTPWriter(rec)
+	env := server.ProtocolEnv{Runtime: r.Runtime, Agent: r.Agent, Conn: &server.Conn{Writer: mw}}
+	_ = proto.HandleInbound(t.Context(), env, []byte(body))
+	return rec
+}
+
+type acpTestServer struct {
+	t     *testing.T
+	r     *testRuntime
+	proto server.Protocol
+	wire  server.ProtocolWireStore
+}
+
+func newACPTestServerWithWire(t *testing.T, r *testRuntime, wire server.ProtocolWireStore) *acpTestServer {
+	t.Helper()
+	return &acpTestServer{t: t, r: r, proto: acp.New(wire), wire: wire}
+}
+
+func (s *acpTestServer) rpc(body string) *httptest.ResponseRecorder {
+	s.t.Helper()
+	return serveACPInbound(s.t, s.r, s.proto, body)
+}
+
+func acpRPCResult(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if errObj, ok := resp["error"]; ok && errObj != nil {
+		t.Fatalf("unexpected error: %v", errObj)
+	}
+	res, _ := resp["result"].(map[string]any)
+	return res
+}
+
+func parseACPFrames(t *testing.T, body io.Reader) []map[string]any {
+	t.Helper()
+	var frames []map[string]any
+	dec := json.NewDecoder(body)
+	for {
+		var frame map[string]any
+		if err := dec.Decode(&frame); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("decode ACP frame: %v", err)
+		}
+		frames = append(frames, frame)
+	}
+	return frames
 }

@@ -154,8 +154,8 @@ func newRunCommandSession(t *testing.T) (*vfs.MountSession, HarnessRuntime) {
 	t.Helper()
 	ms := mustMountTree(t, t.Name(), vfs.At("work", vfs.Local(t.TempDir())))
 	h := mustNewTurnManager(t, AgentOptions{
-		SessionID:    t.Name(),
-		MountSession: ms,
+		sessionID:    t.Name(),
+		mountSession: ms,
 		Model:        &scriptedModel{},
 	})
 	return ms, turnRuntime(h)
