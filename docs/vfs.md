@@ -1,6 +1,6 @@
 # Virtual filesystem (`vfs`)
 
-Tacklr’s virtual filesystem gives agents one path-based interface over storage backends (local disk, S3, **brain Engrams**, Google Drive / Docs, and Microsoft Graph files). Hosts build a turn tree with `vfs.Tree` / `vfs.At`; the client supplies credentials before a turn; agents only see virtual paths under `/workspace` (`/workspace/work/main.go`, `/workspace/engram/deal/acme.md`, `/workspace/contracts/nda.pdf`).
+Tacklr’s virtual filesystem gives agents one path-based interface over storage backends (local disk, S3, Google Drive / Docs, and Microsoft Graph files). Hosts build a turn tree with `vfs.Tree` / `vfs.At`; the client supplies credentials before a turn; agents only see virtual paths under `/workspace` (`/workspace/work/main.go`, `/workspace/contracts/nda.pdf`). Knowledge records stay in the brain and are not a mount.
 
 Package: [`github.com/ryanaldo34/tacklr/vfs`](https://pkg.go.dev/github.com/ryanaldo34/tacklr/vfs).
 
@@ -10,7 +10,7 @@ Knowledge objects, search, and the graph are documented in **[docs/knowledge.md]
 
 ```text
   Host OpenVFS (Tree/At); client binds credentials before the turn
-  Host OpenSkills (separate Tree); loader only — never session.VFS
+  SkillsPath is a directory on that tree, or a local directory when no tree is mounted
            │
            ▼
   MountSession (injected if configured)  ── /workspace/work/main.go
@@ -63,7 +63,6 @@ The only top-level mount is **`/workspace`**. Hosts close over clients in `vfs.O
 ```go
 open := vfs.Tree(
 	vfs.At("work", vfs.Local("/var/agent/scratch")),
-	vfs.At("engram", engram.Open(eng, scope)),
 )
 ms, err := open(ctx, "sess-1", vfs.Request{})
 ```
@@ -91,7 +90,7 @@ Tests point the official SDKs at httptest: `NewGoogleDriveHTTP` and `NewGraph(ho
 |------|---------|
 | `At(name, open)` | One `/workspace/<name>` backend |
 | `Tree(...)` | One `/workspace` mount whose members are the At list |
-| `Union(...)` | Read-only merge of Opens (skill packs on `OpenSkills`: `Tree(At("skills", Union(Local(a), Local(b))))`) |
+| `Union(...)` | Read-only merge of Opens (`At("skills", Union(Local(a), Local(b)))` on the workspace) |
 | `MountSpec` | Durable description (point `/workspace`, members, **indexPolicy**). Checkpoint-safe; no secrets. |
 | `IndexPolicy` | `none` \| `selective` \| `prefix` \| `watch` (empty → selective when the index bridge is on) |
 
@@ -99,7 +98,7 @@ Tests point the official SDKs at httptest: `NewGoogleDriveHTTP` and `NewGraph(ho
 
 ### Skills
 
-Playbooks are **not** on the agent `/workspace` tree. Hosts set `AgentOptions.OpenSkills` to a separate `vfs.Tree` (often `At("skills", vfs.Union(...))`). Overlapping first-level names in a Union are `ErrAmbiguous`. The loader walks `SkillsRoot` (empty means `/workspace/skills` on that host-only session). The agent never sees those paths. Full instructions load only through `read_skill`.
+`SkillsPath` is one directory. When the turn has a workspace, it is a virtual path (empty means `/workspace/skills` on that tree). When it does not, it is a local directory. Full instructions load only through `read_skill`. A `Union` of skill packs is just a member of the workspace, for example `At("skills", vfs.Union(...))`. Overlapping first-level names in a Union are `ErrAmbiguous`.
 
 Host-owned roots and secrets (local jail, S3 / Azure Blob client) live in the Open closures, not on mounts or checkpoints.
 
@@ -256,9 +255,9 @@ Tool guidance:
 
 `DetectMediaType` is a helper **providers** call when filling `MediaType`. Empty / missing type is treated as `application/octet-stream` (no IR).
 
-FUSE: hosts call `MountSession.FuseMount(dir)` for a kernel tree. **The only mount point is `/workspace`**. Multi-segment points (`/tmp/tacklr`) fail `FuseMount`. If `ReadText` succeeds (`Textual`), `getattr`/`Read` use that plaintext (so `cat`/`rg` see the projection). Otherwise `Stat.Size` + `io.ReaderAt`. Kernel writes persist through `WriteFile` only when `KernelWritable` (`IdentityCodec`). Projected textual types (Word, Notion, Docs) are **read-only** on the kernel (`EROFS`); the agent `write` tool still uses `WriteDocument`. `Tree` attaches `/workspace`; `FuseMount` is the host kernel mount. `HostDir()` is the last mount directory (host-facing only). `FuseAvailable()` probes `/dev/fuse` and `/dev/macfuse*`. `Close` unmounts. Host `ls`/`rg` from HostDir see `workspace/work/…`.
+FUSE: hosts call `MountSession.FuseMount(dir)` for a kernel tree. **The only mount point is `/workspace`**. Multi-segment points (`/tmp/tacklr`) fail `FuseMount`. If `ReadText` succeeds (`Textual`), `getattr`/`Read` use that plaintext (so `cat`/`rg` see the projection). Otherwise `Stat.Size` + `io.ReaderAt`. Kernel writes persist through `WriteFile` only when `KernelWritable` (`IdentityCodec`). Projected textual types (Word, Notion, Docs) are **read-only** on the kernel (`EROFS`); the agent `write` tool still uses `WriteDocument`. `Tree` attaches `/workspace`; `FuseMount` is the host kernel mount. `HostDir()` is the last mount directory (host-facing only). `FuseMount` returns the kernel error when FUSE is unavailable. `Close` unmounts. Host `ls`/`rg` from HostDir see `workspace/work/…`.
 
-`session.Runtime` injects a **turn-scoped** `MountSession` from `AgentOptions.OpenVFS` and attaches FUSE for that slice: `$TMP/tacklr-fuse/<session>` mode `0700`. `OpenSkills` is a second session with no FUSE projection; the agent never receives it. The activity (or in-process turn slice) closes both trees when the step ends. Bind/unbind only record credentials; they do not keep a live tree between prompts. Production without a device has **no** `MountSession` (no VFS tools, no `run_command`). Tests inject `vfs.DirectProjection` so `read`/`write` still work and `run_command` returns `ErrFuseNotMounted` until `HostDir` is set. Device present and mount fails after one suffix retry → fail-hard. Workers reconstruct a `MountSession` per activity; they do not hold a parent pointer.
+`session.Runtime` injects a **turn-scoped** `MountSession` from `AgentOptions.OpenVFS`. A nil `Projection` leaves that session in-process. `vfs.FuseProjection` mounts it at `$TMP/tacklr-fuse/<session>` mode `0700`, and `FuseMount`'s error is how the host learns the kernel mount failed. The activity closes that tree when the step ends. Bind/unbind only record credentials; they do not keep a live tree between prompts. Workers reconstruct a `MountSession` per activity; they do not hold a parent pointer.
 
 `TextCodec` requires valid UTF-8 and builds a `TextDocument` labeled with the caller’s media type.
 
@@ -403,60 +402,23 @@ Full model, search, and graph: **[docs/knowledge.md](knowledge.md)**.
 
 | Job | Store | Sync |
 |-----|--------|------|
-| **Artifact file** (`/work`, `/workspace`, S3, …) | Local/S3/Drive/Graph bytes | **IndexPath** (hash, Document+Chunk) |
-| **Engram** | Engine object | **brain.Provider** read/write (Markdown + YAML) |
+| **Workspace file** | Local/S3/Drive/Graph bytes | **IndexPath** (hash, Document+Chunk) |
+| **Knowledge record** | Brain row | `save_*` calls `Engine.Put`. Search reads the store |
 
-`vfs` never imports `brain`. Brain implements `vfs.Provider`. Package
-[`vfsindex`](../vfsindex) indexes **non-brain** mounts only.
+`vfs` never imports `brain`. Package
+[`vfsindex`](../vfsindex) copies mounted files into brain Documents and Chunks.
 
-### Engrams as files (`brain.Provider`)
-
-Host-defined `KindSpec`s are domains (Deal, Person are examples, not product types).
-Kind names must be path-safe: no `/` or `..`. Only **parent** kinds become directories;
-parts/chunks are never files. See [knowledge.md](knowledge.md) for the file format,
-write-through sequence, and `save_*` behavior.
-
-**Factory params** (`MountSpec.Profile == "brain"`):
-
-| Param | Meaning |
-|-------|---------|
-| `mode` | `prefix` (default) or `roots` |
-| `kind` | Required for `roots` — one kind per mount (`/deal/acme.md`) |
-| `kinds` | Comma allow-list. Empty catalog: pass `kinds=` or list kinds that already have objects |
-
-```text
-# default harness mount when Brain + VFS + namespace and no host brain mount
-Mount { Point: "/engram", Profile: "brain", IndexPolicy: none, Params: { mode: prefix } }
-→ /engram/deal/acme.md
-
-# host roots layout
-Mount { Point: "/deal", Profile: "brain", Params: { mode: roots, kind: Deal } }
-→ /deal/acme.md
-```
-
-File format is **Markdown + YAML front matter** (`id`, `domain`/`kind`, `slug`, `title`,
-then kind fields). Body → `Object.Content`. A `---` line inside the YAML block ends
-front matter (standard limitation). `vfs_path` is stored on the object, not in the file.
-
-First save without `id` allocates a UUID and rewrites front matter on the next read.
-**Rename** is not a move: delete + create + re-link.
-
-`save_*` writes the Engram file on the Provider when one is mounted; otherwise it
-falls back to `Engine.Put`. Scratch `/memory` is **not** attached when a brain
-Provider mount exists (deprecated for discoveries).
-
-**Shape A graph tools:** `link` / `unlink` / `expand` / `find_links` speak **paths**.
-There are no `.links` directories; `ls` never lists edges. Artifact paths
-must be indexed (`index_file` / prefix policy) before they can be linked.
+`link` / `unlink` / `expand` accept an indexed file path or an object id.
+There are no `.links` directories. A workspace path must be indexed (`index_file` or a prefix/watch policy) before it can be linked. Knowledge records are written with `save_*` and read with `search` and `read_object`.
 
 ### Index policy
 
 | Policy | Pipeline triggers |
 |--------|-------------------|
 | `none` | No auto jobs; `index_file` **errors** |
-| `selective` | Only `index_file` / host IndexPath; after a successful `index_file`, AfterPersist reindexes that path (track set) |
-| `prefix` | IndexPrefix at bridge start + AfterPersist under the mount |
-| `watch` | Same auto triggers as `prefix` |
+| `selective` | `index_file` or a host `IndexPath` |
+| `prefix` | Host may call `IndexPrefix`. The turn does not walk or re-index writes |
+| `watch` | Same as `prefix`. The turn does not subscribe to the provider |
 
 Empty → **selective**.
 
@@ -464,12 +426,11 @@ Empty → **selective**.
 
 ```text
   index_file ──┐
-  IndexPrefix ─┼──► IndexPath ──► brain Document+Chunks (hash skip)
-  AfterPersist ┘       │  (never walks Profile=="brain")
+  host IndexPath ┼──► IndexPath ──► brain Document+Chunks (hash skip)
+  IndexPrefix ──┘
 ```
 
-Brain-profile mounts set `IndexPolicy=none` automatically and are never re-indexed
-as Document/Chunk artifacts. Engram writes go through the Provider (`Put`), not IndexPath.
+A mount with `IndexPolicy=none` is not indexed. Knowledge records are not files, so they are not indexed here.
 
 ### Decoupling
 
@@ -478,7 +439,7 @@ as Document/Chunk artifacts. Engram writes go through the Provider (`Put`), not 
 | `vfs` | Specs (incl. IndexPolicy string), `AfterPersist` hook only |
 | `brain` | Objects/props only; no VFS |
 | `vfsindex` | Both; owns `IndexPath` / `IndexPrefix` / schedulers / policy helpers |
-| harness (`tacklr`) | engram.Open + `/engram` default, skip-index on brain profile, tools |
+| harness (`tacklr`) | file tools and knowledge tools |
 
 ### Host wiring
 
@@ -500,10 +461,14 @@ ms.SetAfterPersist(func(ctx context.Context, path string) error {
 defer sched.Close()
 ```
 
-### Agent tools (default on when prerequisites hold)
+### Agent tools
 
-When the harness has **Brain + MountSession + search namespace**, it owns a
-`MountIndexer` + `AsyncScheduler`, composes policy-gated `AfterPersist`, and registers:
+A turn with a brain, a workspace, and a search namespace registers `index_file`
+and `unindex`. Those tools write the brain when the agent calls them. The turn
+does not re-index a file because it was written, and it does not listen for
+provider events. A host pipeline that already updates the brain should keep
+doing that. Omit Brain to leave knowledge tools off. Omit the workspace or
+the namespace to leave `index_file` off.
 
 | Tool | Role |
 |------|------|
@@ -514,14 +479,13 @@ When the harness has **Brain + MountSession + search namespace**, it owns a
 | `save_*` | Write the Engram file on the brain Provider (or `Engine.Put` if no brain mount) |
 | `link` / `expand` / `find_links` | Path-native graph (G1): prefer virtual paths; surface neighbor `vfs_path` |
 
-Omit Brain, VFS, or namespace to opt out (no tools, no harness indexer, no async hook).
+Omit the workspace or the search namespace to leave `index_file` off. Omit Brain to leave knowledge tools off.
 
 ### Session-visible body vs AfterPersist
 
 `IndexPath` uses `MountSession.ReadText` / `Open`. Writes are write-through, so
-`index_file` after `write` indexes the last persist. `AfterPersist` (fired by
-`WriteFile` / `WriteDocument`) drives background reindex when policy (or selective
-track) allows. Write success is never blocked by reindex failures.
+`index_file` after `write` indexes the last persist. A write by itself does not
+update the brain.
 
 Markdown files are chunked by **heading/preamble blocks** (`block_id` and `heading_path` properties) when `Blocks()` is non-empty; other text still uses line windows.
 

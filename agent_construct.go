@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/ryanaldo34/tacklr/brain"
 	"github.com/ryanaldo34/tacklr/mcp"
@@ -14,8 +15,9 @@ import (
 )
 
 // AgentOptions is the one agent, and the argument to NewTurnManager.
-// A session runtime uses OpenVFS and OpenSkills to build the trees for each
-// turn, then BindTurn attaches the session id and those trees.
+// A session runtime uses OpenVFS to build the workspace for each turn, then
+// BindTurn attaches the session id and that tree. SkillsPath is a directory
+// on that tree when it is mounted, and a local directory when it is not.
 //
 // ContextPolicy knobs stay host-settable. Adaptive Case Management itself
 // is harness-owned and cannot be replaced.
@@ -54,19 +56,12 @@ type AgentOptions struct {
 	// ToolResultHooks map tool name → post-success window effects for host tools.
 	// Plan builtins use ToolOutcome instead.
 	ToolResultHooks map[string]ToolResultHook
-	// SkillsLoader loads skills. When nil, SkillsSession is walked with
-	// skills.Loader. MountSession is never used for skills.
+	// SkillsLoader loads skills. When nil, SkillsPath is walked with skills.Loader.
 	SkillsLoader skills.SkillLoader
-	// OpenSkills builds the host-only skills tree for each turn. Nil means
-	// no skills unless SkillsLoader is set. The workspace mount never
-	// includes this tree.
-	OpenSkills vfs.OpenVFS
-	// skillsSession is that tree for this turn. BindTurn sets it from the
-	// tree OpenSkills returned. VFS tools do not see it.
-	skillsSession *vfs.MountSession
-	// SkillsRoot is the virtual directory skills.Loader walks. Empty means
-	// /workspace/skills.
-	SkillsRoot string
+	// SkillsPath is the skills directory. When the turn has a workspace mount,
+	// it is a virtual path and empty means /workspace/skills. When it does not,
+	// it is a local directory and empty means no skills.
+	SkillsPath string
 	// Brain enables knowledge builtins when non-nil. Workers inherit the same engine.
 	// Configure Store, optional QueryEmbedder, and optional GraphReader/GraphWriter on the Engine
 	// before NewTurnManager (e.g. brain.WithGraph(g) after helixgraph.New). The harness
@@ -84,24 +79,20 @@ type AgentOptions struct {
 	OpenVFS vfs.OpenVFS
 	// mountSession is that tree for this turn. BindTurn sets it from the
 	// tree OpenVFS returned. The runtime closes it after the turn.
-	// Do not mount skills here.
 	mountSession *vfs.MountSession
 	// UnattendedRunCommand injects run_command without ToolPermissionOnCall.
 	// Default false: run_command parks for permission.
 	UnattendedRunCommand bool
-	// shareIndexBridge is the parent index bridge. Nil means Start a new bridge.
-	shareIndexBridge *vfsindex.Bridge
 	// skipPlanningLock is set only by WithSpecialist. The parent session always
 	// gates write tools on an active plan.
 	skipPlanningLock bool
 }
 
-// BindTurn attaches the per-turn session id and the trees the runtime opened.
-// Hosts set OpenVFS and OpenSkills. The session runtime calls BindTurn.
-func BindTurn(opts AgentOptions, id string, mount, skills *vfs.MountSession) AgentOptions {
+// BindTurn attaches the per-turn session id and the workspace tree.
+// Hosts set OpenVFS and SkillsPath. The session runtime calls BindTurn.
+func BindTurn(opts AgentOptions, id string, mount *vfs.MountSession) AgentOptions {
 	opts.sessionID = id
 	opts.mountSession = mount
-	opts.skillsSession = skills
 	return opts
 }
 
@@ -134,7 +125,6 @@ func NewTurnManager(ctx context.Context, opts AgentOptions) (*TurnManager, error
 		contextPolicy:         opts.ContextPolicy,
 		runCommandUnattended:  opts.UnattendedRunCommand,
 		writeUnattended:       opts.UnattendedWrite,
-		vfsBridge:             opts.shareIndexBridge,
 	}
 	if opts.mountSession != nil {
 		sm.VFS = opts.mountSession
@@ -264,9 +254,8 @@ func (a *TurnManager) injectBuiltinTools() {
 	a.builtinsInjected = true
 }
 
-// initVFSIndexBridge starts a new vfsindex.Bridge when Brain + VFS + namespace
-// are set. Call only when vfsBridge is nil (this harness owns the lifecycle).
-// Hosts with a non-empty kind catalog should register vfsindex.MountIndexKinds().
+// initVFSIndexBridge starts the explicit file indexer when Brain, a workspace,
+// and a search namespace are set. It does not walk the mount or re-index writes.
 func (a *TurnManager) initVFSIndexBridge() {
 	if a.brain == nil || a.session.VFS == nil {
 		return
@@ -296,10 +285,13 @@ func skillsSource(opts AgentOptions) skills.SkillLoader {
 	if opts.SkillsLoader != nil {
 		return opts.SkillsLoader
 	}
-	if opts.skillsSession == nil {
+	if opts.mountSession != nil {
+		return skills.Loader{Session: opts.mountSession, Root: opts.SkillsPath}
+	}
+	if strings.TrimSpace(opts.SkillsPath) == "" {
 		return nil
 	}
-	return skills.Loader{Session: opts.skillsSession, Root: opts.SkillsRoot}
+	return skills.Loader{Root: opts.SkillsPath}
 }
 
 func (a *TurnManager) initSkills(ctx context.Context) error {

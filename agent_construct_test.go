@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ryanaldo34/tacklr/interrupt"
 	"github.com/ryanaldo34/tacklr/mcp"
 	"github.com/ryanaldo34/tacklr/skills"
 	"github.com/ryanaldo34/tacklr/vfs"
@@ -46,14 +45,14 @@ func TestNewTurnManager_constructFailClosed(t *testing.T) {
 	_, err := NewTurnManager(context.Background(), AgentOptions{
 		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
-		skillsSession: ms,
+		mountSession:  ms,
 	})
 	if err == nil || !strings.Contains(err.Error(), "initialize skills") {
 		t.Fatalf("want skills construct error, got %v", err)
 	}
 }
 
-func TestNewTurnManager_skillsIsolatedFromWorkspace(t *testing.T) {
+func TestNewTurnManager_skillsPathOnWorkspace(t *testing.T) {
 	ctx := t.Context()
 	pack := t.TempDir()
 	d := filepath.Join(pack, "research")
@@ -64,14 +63,12 @@ func TestNewTurnManager_skillsIsolatedFromWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ms := mustMountTree(t, t.Name(), vfs.At("work", vfs.Local(t.TempDir())))
-	skillsMS := mustMountTree(t, t.Name()+"-skills", vfs.At("skills", vfs.Local(pack)))
+	ms := mustMountTree(t, t.Name(), vfs.At("work", vfs.Local(t.TempDir())), vfs.At("skills", vfs.Local(pack)))
 
 	h := mustNewTurnManager(t, AgentOptions{
 		MaxWindowSize: 8192,
 		Model:         &scriptedModel{},
 		mountSession:  ms,
-		skillsSession: skillsMS,
 	})
 	t.Cleanup(h.Close)
 
@@ -88,9 +85,9 @@ func TestNewTurnManager_skillsIsolatedFromWorkspace(t *testing.T) {
 	if read == nil {
 		t.Fatal("read missing")
 	}
-	_, err = read.invoke(ctx, `{"path":"/workspace/skills/research/SKILL.md"}`, turnRuntime(h))
-	if !errors.Is(err, vfs.ErrNotExist) {
-		t.Fatalf("workspace read of skill path: %v", err)
+	res, err = read.invoke(ctx, `{"path":"/workspace/skills/research/SKILL.md"}`, turnRuntime(h))
+	if err != nil || !strings.Contains(res.output, "Always verify claims") {
+		t.Fatalf("skill file on the workspace: %v %s", err, res.output)
 	}
 }
 
@@ -289,8 +286,8 @@ func TestTurnManager_checkpointAfterRun(t *testing.T) {
 		t.Fatal("unknown interrupt id")
 	}
 	parkID := "ask1"
-	_ = h.session.Park(parkID, &interrupt.UserSelectionInterrupt{
-		Options: []interrupt.UserChoice{{Title: "a"}, {Title: "b"}},
+	_ = h.session.Park(parkID, &UserSelectionInterrupt{
+		Options: []UserChoice{{Title: "a"}, {Title: "b"}},
 	})
 	h.pendingToolCalls[parkID] = PendingToolCall{
 		ToolCall: &ToolCall{ID: parkID, CallID: parkID, Name: "ask_user_choice"}, InterruptActive: true,

@@ -23,14 +23,17 @@ func TestTree_hostMembersUnderWorkspace(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ms.Close() })
 	specs := ms.Specs()
-	if len(specs) != 1 || specs[0].Point != vfs.WorkspacePoint {
+	if len(specs) != 1 || specs[0].Point != "/workspace/work" {
 		t.Fatalf("Specs = %+v", specs)
 	}
-	got, err := ms.ReadFile(ctx, "/workspace/work/a.txt")
-	if err != nil || string(got) != "hi" {
+
+	if got, err := ms.Route(ctx, "/workspace/work/a.txt").
+		ReadFile(ctx); err != nil || string(got) != "hi" {
 		t.Fatalf("ReadFile = %q err=%v", got, err)
 	}
-	if err := ms.WriteFile(ctx, "/workspace/work/b.txt", []byte("new")); err != nil {
+
+	if err := ms.Route(ctx, "/workspace/work/b.txt").
+		WriteFile(ctx, []byte("new")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -61,8 +64,9 @@ func TestTree_skipsNilProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ms.Close() })
-	ents, err := ms.ReadDir(t.Context(), vfs.WorkspacePoint)
-	if err != nil || len(ents) != 1 || ents[0].Name != "work" {
+
+	if ents, err := ms.Route(t.Context(), vfs.WorkspacePoint).
+		ReadDir(t.Context()); err != nil || len(ents) != 1 || ents[0].Name != "work" {
 		t.Fatalf("ReadDir = %+v err=%v", ents, err)
 	}
 }
@@ -75,7 +79,9 @@ func TestTree_readOnlyHostMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ms.Close() })
-	if err := ms.WriteFile(ctx, "/workspace/ro/x.txt", []byte("no")); !errors.Is(err, vfs.ErrReadOnly) {
+
+	if err := ms.Route(ctx, "/workspace/ro/x.txt").
+		WriteFile(ctx, []byte("no")); !errors.Is(err, vfs.ErrReadOnly) {
 		t.Fatalf("write ro: %v", err)
 	}
 }
@@ -95,15 +101,20 @@ func TestTree_driveHTTPInjected(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ms.Close() })
-	got, err := ms.ReadFile(ctx, "/workspace/contracts/nda.pdf")
+
+	got, err := ms.Route(ctx, "/workspace/contracts/nda.pdf").
+		ReadFile(ctx)
 	if err != nil || string(got) != "%PDF" {
 		t.Fatalf("contracts: %q err=%v", got, err)
 	}
-	got, err = ms.ReadFile(ctx, "/workspace/notes/readme.txt")
-	if err != nil || string(got) != "hello" {
+
+	if got, err := ms.Route(ctx, "/workspace/notes/readme.txt").
+		ReadFile(ctx); err != nil || string(got) != "hello" {
 		t.Fatalf("notes: %q err=%v", got, err)
 	}
-	if err := ms.WriteFile(ctx, "/workspace/contracts/nda.pdf", []byte("x")); !errors.Is(err, vfs.ErrReadOnly) {
+
+	if err := ms.Route(ctx, "/workspace/contracts/nda.pdf").
+		WriteFile(ctx, []byte("x")); !errors.Is(err, vfs.ErrReadOnly) {
 		t.Fatalf("default bind is read-only: %v", err)
 	}
 }
@@ -120,7 +131,9 @@ func TestTree_driveWritableBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ms.Close() })
-	if err := ms.WriteFile(ctx, "/workspace/contracts/new.txt", []byte("ok")); err != nil {
+
+	if err := ms.Route(ctx, "/workspace/contracts/new.txt").
+		WriteFile(ctx, []byte("ok")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -139,12 +152,14 @@ func TestTree_unionSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ms.Close() })
-	ents, err := ms.ReadDir(ctx, "/workspace/skills")
-	if err != nil || len(ents) != 2 {
+
+	if ents, err := ms.Route(ctx, "/workspace/skills").
+		ReadDir(ctx); err != nil || len(ents) != 2 {
 		t.Fatalf("skills dir = %+v err=%v", ents, err)
 	}
-	got, err := ms.ReadFile(ctx, "/workspace/skills/one.md")
-	if err != nil || string(got) != "1" {
+
+	if got, err := ms.Route(ctx, "/workspace/skills/one.md").
+		ReadFile(ctx); err != nil || string(got) != "1" {
 		t.Fatalf("one: %q err=%v", got, err)
 	}
 }
@@ -174,7 +189,7 @@ func TestTree_indexedPolicyOnMember(t *testing.T) {
 }
 
 func TestTree_memberProfileAndBindParams(t *testing.T) {
-	ms, err := vfs.Tree(vfs.At("discovery", vfs.Memory()).Profile("brain"))(t.Context(), t.Name(), vfs.Request{
+	ms, err := vfs.Tree(vfs.At("discovery", vfs.Local(t.TempDir())).Profile("brain"))(t.Context(), t.Name(), vfs.Request{
 		Bindings: []vfs.Binding{{
 			Params: map[string]string{vfs.ParamName: "discovery", "mode": "roots", "kind": "Discovery"},
 		}},

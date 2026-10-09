@@ -65,9 +65,9 @@ These still inject when the turn’s world is present. They close over per-turn 
 | You set | Tools that close over it |
 |---------|--------------------------|
 | `MountSession` | `read`, `write`, `write_document`, `write_spreadsheet`, `run_command` |
-| `SkillsSession` (`AgentOptions.OpenSkills`) | `read_skill` |
+| `SkillsPath` (on the workspace when mounted, otherwise a local directory) | `read_skill` |
 | `Brain` | `search`, `find_exact`, `read_object`, `schema`, `save_*`, `link`, `expand`, … |
-| Brain + VFS + namespace (index bridge) | `index_file`, `unindex` |
+| Brain + workspace + search namespace | `index_file`, `unindex` |
 
 Write tools need an active plan (`create_plan`). That lock is a product rule: hosts cannot turn it off. Specialists skip it. `write` / `run_command` park for permission unless the host sets `UnattendedWrite` / `UnattendedRunCommand` on `AgentOptions`.
 
